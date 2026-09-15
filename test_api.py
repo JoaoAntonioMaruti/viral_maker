@@ -44,18 +44,14 @@ class ApiTests(unittest.TestCase):
         self.addCleanup(self.final_patch.stop)
         self.audio_directory = Path(self.temp_directory.name) / "audio"
         self.audio_directory.mkdir()
-        default_music = self.audio_directory / "default.mp3"
-        default_music.write_bytes(b"default audio")
+        (self.audio_directory / "default.mp3").write_bytes(b"default audio")
         (self.audio_directory / "second.m4a").write_bytes(b"other")
         (self.audio_directory / "ignore.txt").write_text("not audio")
         self.audio_directory_patch = patch.object(
             api, "AUDIO_DIRECTORY", self.audio_directory
         )
-        self.music_file_patch = patch.object(api, "MUSIC_FILE", default_music)
         self.audio_directory_patch.start()
-        self.music_file_patch.start()
         self.addCleanup(self.audio_directory_patch.stop)
-        self.addCleanup(self.music_file_patch.stop)
         self.database_path = Path(self.temp_directory.name) / "audio_metrics.db"
         self.database_path_patch = patch.object(
             api, "DATABASE_PATH", self.database_path
@@ -157,7 +153,6 @@ class ApiTests(unittest.TestCase):
                 {
                     "filename": "default.mp3",
                     "size_bytes": 13,
-                    "is_default": True,
                     "url": "/media/audios/default.mp3",
                     "views": None,
                     "likes": None,
@@ -167,7 +162,6 @@ class ApiTests(unittest.TestCase):
                 {
                     "filename": "second.m4a",
                     "size_bytes": 5,
-                    "is_default": False,
                     "url": "/media/audios/second.m4a",
                     "views": None,
                     "likes": None,
@@ -418,6 +412,23 @@ class ApiTests(unittest.TestCase):
                 api.VideoCreate(music=False, music_filename="missing.mp3"),
                 self.request,
             )
+        self.assertIsNone(response.music_filename)
+        self.assertIsNone(generate.call_args.kwargs["music_path"])
+
+    def test_music_enabled_without_filename_adds_no_music(self):
+        generated = self.output_directory / "20260915_120002_1.mp4"
+        generated.write_bytes(b"video")
+        with (
+            patch.object(api, "default_output_path", return_value=generated),
+            patch.object(
+                api, "generate_video", return_value=(1, "caption", generated)
+            ) as generate,
+        ):
+            response = api.create_video(
+                api.VideoCreate(music=True, music_filename=None),
+                self.request,
+            )
+        self.assertFalse(response.music)
         self.assertIsNone(response.music_filename)
         self.assertIsNone(generate.call_args.kwargs["music_path"])
 

@@ -4,8 +4,9 @@ CLI em Python para colocar uma legenda no primeiro vídeo e concatená-lo com um
 vídeo final usando FFmpeg. O resultado é normalizado para 1080x1920, 60 fps e
 H.264, adequado a vídeos verticais de redes sociais.
 Todas as faixas de áudio dos vídeos de entrada são descartadas. Na execução
-interativa, a CLI pergunta se deve adicionar a música padrão de `audio/` ao
-fundo, com 100% de volume.
+interativa, a CLI pergunta se deve adicionar música de fundo baixada de uma
+URL do TikTok, com 100% de volume por padrão. Não há música padrão — sem uma
+URL ou um arquivo explícito, o vídeo sai sem trilha sonora.
 
 ## Requisitos
 
@@ -35,14 +36,13 @@ python3 video_maker.py --language pt --index 3 --position center
 
 Responda `Y` ou pressione Enter para adicionar música; a CLI pedirá uma URL do
 TikTok, baixará o MP3 em `audio/` e o usará na mesma montagem. Responda `n` para
-gerar sem música. Em scripts, use `--music-url URL`, `--with-music` para a faixa
-padrão já baixada, ou `--no-music`.
-Controle o volume com `--music-volume` ou use outro arquivo com `--music`:
+gerar sem música. Em scripts, use `--music-url URL` ou `--music arquivo.mp3`
+para uma faixa já baixada, ou `--no-music`.
+Controle o volume com `--music-volume`:
 
 ```bash
 python3 video_maker.py --music-url 'https://vm.tiktok.com/exemplo/'
-python3 video_maker.py --with-music --music-volume 0.15
-python3 video_maker.py --music audio/outra-musica.mp3
+python3 video_maker.py --music audio/outra-musica.mp3 --music-volume 0.15
 python3 video_maker.py --no-music
 ```
 
@@ -135,14 +135,15 @@ Exemplo da listagem de músicas:
 curl http://localhost:8000/audios
 ```
 
-Cada item contém `filename`, `size_bytes` e `is_default`; caminhos internos do
+Cada item contém `filename`, `size_bytes` e `url`; caminhos internos do
 servidor não são retornados. O campo `url` aponta para o arquivo servido por HTTP.
 Passe exatamente esse `filename` como `music_filename` em `POST /videos/reaction`.
-Se `music_filename` for omitido com `music: true`, a música padrão será usada.
+Não existe música padrão: se `music_filename` for omitido, o vídeo sai sem
+música mesmo com `music: true`.
 Cada item também traz `views`, `likes`, `comments` e `shares` com as métricas de
 engajamento do TikTok, quando conhecidas; esses campos são `null` quando o
-arquivo não tem métricas associadas (ex.: a música padrão `ssstik.io_...mp3`
-ou arquivos adicionados manualmente).
+arquivo não tem métricas associadas (arquivos baixados antes desta feature ou
+adicionados manualmente).
 
 Baixe um áudio do TikTok diretamente pela API, salvando o arquivo em `audio/`
 e registrando as métricas de engajamento no SQLite local:

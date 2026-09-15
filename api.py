@@ -31,7 +31,6 @@ VIDEO_DIRECTORY = PROJECT_ROOT / "videos"
 FINAL_VIDEO_DIRECTORY = PROJECT_ROOT / "videos" / "final_videos"
 CAPTION_DATA = PROJECT_ROOT / "data.json"
 AUDIO_DIRECTORY = PROJECT_ROOT / "audio"
-MUSIC_FILE = AUDIO_DIRECTORY / "ssstik.io_1789458727141.mp3"
 DATABASE_PATH = PROJECT_ROOT / "audio_metrics.db"
 SUPPORTED_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 
@@ -97,7 +96,6 @@ class InitialVideo(BaseModel):
 class AudioFile(BaseModel):
     filename: str
     size_bytes: int
-    is_default: bool
     url: str
     views: int | None = None
     likes: int | None = None
@@ -146,14 +144,11 @@ def resolve_audio_file(filename: str) -> Path:
     return candidate
 
 
-def _audio_file_response(
-    path: Path, default_music: Path, metrics: dict[str, dict]
-) -> AudioFile:
+def _audio_file_response(path: Path, metrics: dict[str, dict]) -> AudioFile:
     metric = metrics.get(path.stem)
     return AudioFile(
         filename=path.name,
         size_bytes=path.stat().st_size,
-        is_default=path.resolve() == default_music,
         url=f"/media/audios/{path.name}",
         views=metric.get("view_count") if metric else None,
         likes=metric.get("like_count") if metric else None,
@@ -220,7 +215,6 @@ def get_initial_videos() -> list[InitialVideo]:
 def get_audio_files() -> list[AudioFile]:
     if not AUDIO_DIRECTORY.is_dir():
         return []
-    default_music = MUSIC_FILE.resolve()
     files = [
         path
         for path in AUDIO_DIRECTORY.iterdir()
@@ -228,7 +222,7 @@ def get_audio_files() -> list[AudioFile]:
     ]
     files.sort(key=lambda path: path.name.casefold())
     metrics = fetch_all_metrics(DATABASE_PATH)
-    return [_audio_file_response(path, default_music, metrics) for path in files]
+    return [_audio_file_response(path, metrics) for path in files]
 
 
 @app.post("/audios", response_model=AudioFile, status_code=status.HTTP_201_CREATED)
@@ -257,7 +251,7 @@ def create_audio(payload: AudioCreate) -> AudioFile:
         )
 
     metrics = fetch_all_metrics(DATABASE_PATH)
-    return _audio_file_response(downloaded, MUSIC_FILE.resolve(), metrics)
+    return _audio_file_response(downloaded, metrics)
 
 
 @app.get("/data", response_model=CaptionData)
@@ -306,10 +300,8 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
         with render_lock:
             initial_video = resolve_initial_video(payload.video)
             final_video = resolve_final_video(FINAL_VIDEO_DIRECTORY, payload.final)
-            if payload.music:
-                selected_music = resolve_audio_file(
-                    payload.music_filename or MUSIC_FILE.name
-                )
+            if payload.music and payload.music_filename:
+                selected_music = resolve_audio_file(payload.music_filename)
             OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
             output = OUTPUT_DIRECTORY / default_output_path(initial_video).name
             selected_index, caption, created_path = generate_video(
@@ -340,7 +332,7 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
         final=payload.final,
         carousel=payload.carousel,
         carousel_position=payload.carousel_position,
-        music=payload.music,
+        music=selected_music is not None,
         music_filename=selected_music.name if selected_music else None,
         music_volume=payload.music_volume,
         download_url=str(request.url_for("download_video", video_id=video_id)),

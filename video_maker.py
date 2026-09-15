@@ -21,7 +21,6 @@ DEFAULT_FIRST = Path("videos/1.mp4")
 DEFAULT_FINAL_DIRECTORY = Path("videos/final_videos")
 DEFAULT_DATA = Path("data.json")
 DEFAULT_OUTPUT_DIRECTORY = Path("outputs")
-DEFAULT_MUSIC = Path("audio/ssstik.io_1789458727141.mp3")
 DEFAULT_CAROUSEL_ARROW = Path("assets/right-arrow.png")
 CAROUSEL_FONT_SIZE = 68
 CAROUSEL_ARROW_SIZE = 52
@@ -94,11 +93,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=1.0,
         metavar="0..1",
         help="background music volume (default: 1.0 / 100%%)",
-    )
-    music_group.add_argument(
-        "--with-music",
-        action="store_true",
-        help=f"use the default background music ({DEFAULT_MUSIC}) without prompting",
     )
     music_group.add_argument(
         "--no-music",
@@ -194,8 +188,6 @@ def resolve_cli_music(
         return args.music
     if args.music_url is not None:
         return downloader(args.music_url)
-    if args.with_music:
-        return DEFAULT_MUSIC
     if args.no_music:
         return None
     if not prompt_for_music(input_fn):
@@ -504,7 +496,7 @@ def generate_video(
     position: str = "top",
     carousel: bool = False,
     carousel_position: str = "top",
-    music_path: Path | None = DEFAULT_MUSIC,
+    music_path: Path | None = None,
     music_volume: float = 1.0,
     first_path: Path = DEFAULT_FIRST,
     final_path: Path,

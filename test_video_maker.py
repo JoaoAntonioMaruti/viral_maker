@@ -238,17 +238,12 @@ class MusicPromptTests(unittest.TestCase):
 
     def test_explicit_flags_skip_prompt(self):
         parser = __import__("video_maker").build_parser()
-        with_music = parser.parse_args(["--with-music"])
         without_music = parser.parse_args(["--no-music"])
         custom_music = parser.parse_args(["--music", "audio/custom.mp3"])
 
         def unexpected_prompt(_prompt):
             self.fail("prompt should not be called")
 
-        self.assertEqual(
-            resolve_cli_music(with_music, unexpected_prompt),
-            Path("audio/ssstik.io_1789458727141.mp3"),
-        )
         self.assertIsNone(resolve_cli_music(without_music, unexpected_prompt))
         self.assertEqual(
             resolve_cli_music(custom_music, unexpected_prompt),
