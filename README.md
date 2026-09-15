@@ -139,6 +139,25 @@ Cada item contém `filename`, `size_bytes` e `is_default`; caminhos internos do
 servidor não são retornados. O campo `url` aponta para o arquivo servido por HTTP.
 Passe exatamente esse `filename` como `music_filename` em `POST /videos/reaction`.
 Se `music_filename` for omitido com `music: true`, a música padrão será usada.
+Cada item também traz `views`, `likes`, `comments` e `shares` com as métricas de
+engajamento do TikTok, quando conhecidas; esses campos são `null` quando o
+arquivo não tem métricas associadas (ex.: a música padrão `ssstik.io_...mp3`
+ou arquivos adicionados manualmente).
+
+Baixe um áudio do TikTok diretamente pela API, salvando o arquivo em `audio/`
+e registrando as métricas de engajamento no SQLite local:
+
+```bash
+curl -X POST http://localhost:8000/audios \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://www.tiktok.com/@usuario/video/123"}'
+```
+
+A resposta (HTTP 201) é o mesmo formato de `GET /audios`, já com `views`,
+`likes`, `comments` e `shares` preenchidos quando o TikTok expõe essas
+métricas. Aceita `overwrite` (padrão `false`) e `cookies_from_browser` para
+vídeos que exigem sessão autenticada. Um download inválido ou que falhe
+retorna HTTP 400 com o motivo.
 
 Liste as legendas filtrando pelo idioma:
 

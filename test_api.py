@@ -7,6 +7,7 @@ from unittest.mock import Mock, patch
 
 try:
     import api
+    import audio_metrics
     from fastapi import HTTPException
     from pydantic import ValidationError
 except ImportError:
@@ -55,6 +56,12 @@ class ApiTests(unittest.TestCase):
         self.music_file_patch.start()
         self.addCleanup(self.audio_directory_patch.stop)
         self.addCleanup(self.music_file_patch.stop)
+        self.database_path = Path(self.temp_directory.name) / "audio_metrics.db"
+        self.database_path_patch = patch.object(
+            api, "DATABASE_PATH", self.database_path
+        )
+        self.database_path_patch.start()
+        self.addCleanup(self.database_path_patch.stop)
         self.caption_data = Path(self.temp_directory.name) / "data.json"
         self.caption_data.write_text(
             json.dumps(
@@ -88,6 +95,7 @@ class ApiTests(unittest.TestCase):
         self.assertIn(("/videos", "GET"), routes)
         self.assertNotIn(("/videos", "POST"), routes)
         self.assertIn(("/audios", "GET"), routes)
+        self.assertIn(("/audios", "POST"), routes)
         self.assertIn(("/data", "GET"), routes)
         self.assertIn(("/outputs", "GET"), routes)
         mount_paths = {
@@ -151,19 +159,110 @@ class ApiTests(unittest.TestCase):
                     "size_bytes": 13,
                     "is_default": True,
                     "url": "/media/audios/default.mp3",
+                    "views": None,
+                    "likes": None,
+                    "comments": None,
+                    "shares": None,
                 },
                 {
                     "filename": "second.m4a",
                     "size_bytes": 5,
                     "is_default": False,
                     "url": "/media/audios/second.m4a",
+                    "views": None,
+                    "likes": None,
+                    "comments": None,
+                    "shares": None,
                 },
             ],
         )
 
+    def test_lists_audio_files_with_known_metrics(self):
+        audio_metrics.upsert_metrics(
+            self.database_path,
+            "second",
+            source_url="https://www.tiktok.com/@user/video/second",
+            title="Some clip",
+            author="user",
+            view_count=1000,
+            like_count=200,
+            comment_count=30,
+            share_count=4,
+        )
+        files = {audio.filename: audio for audio in api.get_audio_files()}
+        self.assertEqual(files["second.m4a"].views, 1000)
+        self.assertEqual(files["second.m4a"].likes, 200)
+        self.assertEqual(files["second.m4a"].comments, 30)
+        self.assertEqual(files["second.m4a"].shares, 4)
+        self.assertIsNone(files["default.mp3"].views)
+
     def test_audio_list_is_empty_when_directory_does_not_exist(self):
         with patch.object(api, "AUDIO_DIRECTORY", self.audio_directory / "missing"):
             self.assertEqual(api.get_audio_files(), [])
+
+    def test_create_audio_success(self):
+        downloaded = self.audio_directory / "123456.mp3"
+        downloaded.write_bytes(b"tiktok audio")
+        metadata = {
+            "tiktok_id": "123456",
+            "source_url": "https://www.tiktok.com/@user/video/123456",
+            "title": "A viral clip",
+            "author": "user",
+            "view_count": 5000,
+            "like_count": 900,
+            "comment_count": 40,
+            "share_count": 12,
+        }
+        with patch.object(
+            api,
+            "download_audio_with_metadata",
+            return_value=(downloaded, metadata),
+        ) as download:
+            response = api.create_audio(
+                api.AudioCreate(url="https://www.tiktok.com/@user/video/123456")
+            )
+
+        download.assert_called_once_with(
+            "https://www.tiktok.com/@user/video/123456",
+            self.audio_directory,
+            overwrite=False,
+            cookies_from_browser=None,
+        )
+        self.assertEqual(response.filename, "123456.mp3")
+        self.assertEqual(response.views, 5000)
+        self.assertEqual(response.likes, 900)
+        self.assertEqual(response.comments, 40)
+        self.assertEqual(response.shares, 12)
+        stored = audio_metrics.fetch_all_metrics(self.database_path)
+        self.assertEqual(stored["123456"]["view_count"], 5000)
+
+    def test_create_audio_tolerates_missing_metadata(self):
+        downloaded = self.audio_directory / "789.mp3"
+        downloaded.write_bytes(b"tiktok audio")
+        with patch.object(
+            api, "download_audio_with_metadata", return_value=(downloaded, {})
+        ):
+            response = api.create_audio(
+                api.AudioCreate(url="https://www.tiktok.com/@user/video/789")
+            )
+
+        self.assertIsNone(response.views)
+        self.assertEqual(
+            audio_metrics.fetch_all_metrics(self.database_path), {}
+        )
+
+    def test_create_audio_maps_download_error_to_400(self):
+        with patch.object(
+            api,
+            "download_audio_with_metadata",
+            side_effect=api.AudioDownloadError("boom"),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                api.create_audio(
+                    api.AudioCreate(url="https://www.tiktok.com/@user/video/1")
+                )
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("boom", raised.exception.detail)
 
     def test_filters_caption_data_by_language(self):
         response = api.get_caption_data("pt")

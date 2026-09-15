@@ -12,6 +12,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from audio_metrics import fetch_all_metrics, upsert_metrics
+from download_tiktok_audio import AudioDownloadError, download_audio_with_metadata
 from video_maker import (
     VideoMakerError,
     default_output_path,
@@ -30,6 +32,7 @@ FINAL_VIDEO_DIRECTORY = PROJECT_ROOT / "videos" / "final_videos"
 CAPTION_DATA = PROJECT_ROOT / "data.json"
 AUDIO_DIRECTORY = PROJECT_ROOT / "audio"
 MUSIC_FILE = AUDIO_DIRECTORY / "ssstik.io_1789458727141.mp3"
+DATABASE_PATH = PROJECT_ROOT / "audio_metrics.db"
 SUPPORTED_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 
 # Video encoding is CPU-heavy. A single worker processes one video at a time.
@@ -96,6 +99,16 @@ class AudioFile(BaseModel):
     size_bytes: int
     is_default: bool
     url: str
+    views: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    shares: int | None = None
+
+
+class AudioCreate(BaseModel):
+    url: str
+    overwrite: bool = False
+    cookies_from_browser: str | None = None
 
 
 class CaptionData(BaseModel):
@@ -131,6 +144,22 @@ def resolve_audio_file(filename: str) -> Path:
     if candidate.parent != AUDIO_DIRECTORY.resolve() or not candidate.is_file():
         raise VideoMakerError(f"Audio file not found: {filename}")
     return candidate
+
+
+def _audio_file_response(
+    path: Path, default_music: Path, metrics: dict[str, dict]
+) -> AudioFile:
+    metric = metrics.get(path.stem)
+    return AudioFile(
+        filename=path.name,
+        size_bytes=path.stat().st_size,
+        is_default=path.resolve() == default_music,
+        url=f"/media/audios/{path.name}",
+        views=metric.get("view_count") if metric else None,
+        likes=metric.get("like_count") if metric else None,
+        comments=metric.get("comment_count") if metric else None,
+        shares=metric.get("share_count") if metric else None,
+    )
 
 
 def resolve_initial_video(number: int) -> Path:
@@ -198,15 +227,37 @@ def get_audio_files() -> list[AudioFile]:
         if path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
     ]
     files.sort(key=lambda path: path.name.casefold())
-    return [
-        AudioFile(
-            filename=path.name,
-            size_bytes=path.stat().st_size,
-            is_default=path.resolve() == default_music,
-            url=f"/media/audios/{path.name}",
+    metrics = fetch_all_metrics(DATABASE_PATH)
+    return [_audio_file_response(path, default_music, metrics) for path in files]
+
+
+@app.post("/audios", response_model=AudioFile, status_code=status.HTTP_201_CREATED)
+def create_audio(payload: AudioCreate) -> AudioFile:
+    try:
+        downloaded, metadata = download_audio_with_metadata(
+            payload.url,
+            AUDIO_DIRECTORY,
+            overwrite=payload.overwrite,
+            cookies_from_browser=payload.cookies_from_browser,
         )
-        for path in files
-    ]
+    except AudioDownloadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if metadata:
+        upsert_metrics(
+            DATABASE_PATH,
+            downloaded.stem,
+            source_url=metadata.get("source_url") or payload.url,
+            title=metadata.get("title"),
+            author=metadata.get("author"),
+            view_count=metadata.get("view_count"),
+            like_count=metadata.get("like_count"),
+            comment_count=metadata.get("comment_count"),
+            share_count=metadata.get("share_count"),
+        )
+
+    metrics = fetch_all_metrics(DATABASE_PATH)
+    return _audio_file_response(downloaded, MUSIC_FILE.resolve(), metrics)
 
 
 @app.get("/data", response_model=CaptionData)

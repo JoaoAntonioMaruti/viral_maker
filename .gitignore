@@ -1,6 +1,9 @@
 # Generated videos
 outputs/
 
+# Local SQLite databases
+*.db
+
 # Python bytecode and caches
 __pycache__/
 *.py[codz]

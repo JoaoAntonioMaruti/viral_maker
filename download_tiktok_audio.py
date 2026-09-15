@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
@@ -69,6 +70,7 @@ def build_download_command(
     *,
     overwrite: bool = False,
     cookies_from_browser: str | None = None,
+    info_json_directory: Path | None = None,
 ) -> list[str]:
     command = [
         yt_dlp,
@@ -93,19 +95,42 @@ def build_download_command(
         str(report_file),
         "--force-overwrites" if overwrite else "--no-overwrites",
     ]
+    if info_json_directory is not None:
+        command.extend(
+            ["--write-info-json", "--paths", f"infojson:{info_json_directory}"]
+        )
     if cookies_from_browser:
         command.extend(["--cookies-from-browser", cookies_from_browser])
     command.append(url)
     return command
 
 
-def download_audio(
+def _read_metadata(info_path: Path, *, fallback_url: str) -> dict[str, object]:
+    try:
+        info = json.loads(info_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return {
+        "tiktok_id": info.get("id"),
+        "source_url": info.get("webpage_url") or info.get("original_url") or fallback_url,
+        "title": info.get("title") or info.get("description"),
+        "author": info.get("uploader") or info.get("uploader_id"),
+        "view_count": info.get("view_count"),
+        "like_count": info.get("like_count"),
+        "comment_count": info.get("comment_count"),
+        # TikTok's "shares" surface in yt-dlp's normalized field as repost_count.
+        "share_count": info.get("repost_count"),
+    }
+
+
+def _download(
     url: str,
-    output_directory: Path = DEFAULT_AUDIO_DIRECTORY,
+    output_directory: Path,
     *,
-    overwrite: bool = False,
-    cookies_from_browser: str | None = None,
-) -> Path:
+    overwrite: bool,
+    cookies_from_browser: str | None,
+    fetch_metadata: bool,
+) -> tuple[Path, dict[str, object] | None]:
     validate_tiktok_url(url)
     yt_dlp = require_program("yt-dlp")
     require_program("ffmpeg")
@@ -114,7 +139,8 @@ def download_audio(
     destination = output_directory.expanduser().resolve()
     destination.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="tiktok-audio-") as temp_directory:
-        report_file = Path(temp_directory) / "downloaded-path.txt"
+        temp_dir_path = Path(temp_directory)
+        report_file = temp_dir_path / "downloaded-path.txt"
         command = build_download_command(
             yt_dlp,
             url,
@@ -122,6 +148,7 @@ def download_audio(
             report_file,
             overwrite=overwrite,
             cookies_from_browser=cookies_from_browser,
+            info_json_directory=temp_dir_path if fetch_metadata else None,
         )
         print("Iniciando download do áudio do TikTok...", flush=True)
         try:
@@ -137,13 +164,53 @@ def download_audio(
                 "yt-dlp finished without reporting an audio file"
             ) from exc
 
-    printed_paths = [line.strip() for line in report.splitlines() if line.strip()]
-    if not printed_paths:
-        raise AudioDownloadError("yt-dlp finished without reporting an audio file")
-    downloaded = Path(printed_paths[-1]).expanduser().resolve()
-    if downloaded.parent != destination or not downloaded.is_file():
-        raise AudioDownloadError(f"Downloaded audio file was not found: {downloaded}")
+        printed_paths = [line.strip() for line in report.splitlines() if line.strip()]
+        if not printed_paths:
+            raise AudioDownloadError("yt-dlp finished without reporting an audio file")
+        downloaded = Path(printed_paths[-1]).expanduser().resolve()
+        if downloaded.parent != destination or not downloaded.is_file():
+            raise AudioDownloadError(f"Downloaded audio file was not found: {downloaded}")
+
+        metadata: dict[str, object] | None = None
+        if fetch_metadata:
+            info_path = temp_dir_path / f"{downloaded.stem}.info.json"
+            metadata = _read_metadata(info_path, fallback_url=url)
+
+    return downloaded, metadata
+
+
+def download_audio(
+    url: str,
+    output_directory: Path = DEFAULT_AUDIO_DIRECTORY,
+    *,
+    overwrite: bool = False,
+    cookies_from_browser: str | None = None,
+) -> Path:
+    downloaded, _ = _download(
+        url,
+        output_directory,
+        overwrite=overwrite,
+        cookies_from_browser=cookies_from_browser,
+        fetch_metadata=False,
+    )
     return downloaded
+
+
+def download_audio_with_metadata(
+    url: str,
+    output_directory: Path = DEFAULT_AUDIO_DIRECTORY,
+    *,
+    overwrite: bool = False,
+    cookies_from_browser: str | None = None,
+) -> tuple[Path, dict[str, object]]:
+    downloaded, metadata = _download(
+        url,
+        output_directory,
+        overwrite=overwrite,
+        cookies_from_browser=cookies_from_browser,
+        fetch_metadata=True,
+    )
+    return downloaded, metadata or {}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
