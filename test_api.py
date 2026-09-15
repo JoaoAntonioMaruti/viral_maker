@@ -37,6 +37,9 @@ class ApiTests(unittest.TestCase):
     def test_health(self):
         self.assertEqual(api.health(), {"status": "ok"})
 
+    def test_default_music_volume_is_full(self):
+        self.assertEqual(api.VideoCreate().music_volume, 1.0)
+
     def test_lists_final_videos(self):
         self.assertEqual(
             [video.model_dump() for video in api.get_final_videos()],
@@ -59,7 +62,14 @@ class ApiTests(unittest.TestCase):
         ):
             response = api.create_video(
                 api.VideoCreate(
-                    language="pt", index=2, position="center", final=2
+                    language="pt",
+                    index=2,
+                    position="center",
+                    final=2,
+                    carousel=True,
+                    carousel_position="bottom",
+                    music=True,
+                    music_volume=0.15,
                 ),
                 self.request,
             )
@@ -67,10 +77,20 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(response.id, "20260915_120000_1")
         self.assertEqual(response.caption, "caption")
         self.assertEqual(response.final, 2)
+        self.assertTrue(response.carousel)
+        self.assertEqual(response.carousel_position, "bottom")
+        self.assertTrue(response.music)
+        self.assertEqual(response.music_volume, 0.15)
         self.assertEqual(
             generate.call_args.kwargs["final_path"],
             (self.final_directory / "2.mp4").resolve(),
         )
+        self.assertTrue(generate.call_args.kwargs["carousel"])
+        self.assertEqual(
+            generate.call_args.kwargs["carousel_position"], "bottom"
+        )
+        self.assertEqual(generate.call_args.kwargs["music_path"], api.MUSIC_FILE)
+        self.assertEqual(generate.call_args.kwargs["music_volume"], 0.15)
         generate.assert_called_once()
 
     def test_status_and_download(self):

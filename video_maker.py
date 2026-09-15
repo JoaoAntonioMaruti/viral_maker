@@ -12,13 +12,16 @@ import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
+
+from download_tiktok_audio import AudioDownloadError, download_audio
 
 
 DEFAULT_FIRST = Path("videos/1.mp4")
 DEFAULT_FINAL_DIRECTORY = Path("videos/final_videos")
 DEFAULT_DATA = Path("data.json")
 DEFAULT_OUTPUT_DIRECTORY = Path("outputs")
+DEFAULT_MUSIC = Path("audio/ssstik.io_1789458727141.mp3")
 LANGUAGES = ("en", "pt", "ja")
 POSITIONS = ("top", "center", "bottom")
 
@@ -48,6 +51,17 @@ def build_parser() -> argparse.ArgumentParser:
         default="top",
         help="caption position (default: top)",
     )
+    parser.add_argument(
+        "--carousel",
+        action="store_true",
+        help="add the localized carousel prompt to the final video",
+    )
+    parser.add_argument(
+        "--carousel-position",
+        choices=POSITIONS,
+        default="top",
+        help="carousel prompt position (default: top)",
+    )
     parser.add_argument("--first", type=Path, default=DEFAULT_FIRST)
     parser.add_argument(
         "--final",
@@ -60,6 +74,33 @@ def build_parser() -> argparse.ArgumentParser:
         "--final-directory", type=Path, default=DEFAULT_FINAL_DIRECTORY
     )
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA)
+    music_group = parser.add_mutually_exclusive_group()
+    music_group.add_argument(
+        "--music",
+        type=Path,
+        help="use a specific background music file",
+    )
+    music_group.add_argument(
+        "--music-url",
+        help="download and use audio from a TikTok URL without prompting",
+    )
+    parser.add_argument(
+        "--music-volume",
+        type=float,
+        default=1.0,
+        metavar="0..1",
+        help="background music volume (default: 1.0 / 100%%)",
+    )
+    music_group.add_argument(
+        "--with-music",
+        action="store_true",
+        help=f"use the default background music ({DEFAULT_MUSIC}) without prompting",
+    )
+    music_group.add_argument(
+        "--no-music",
+        action="store_true",
+        help="generate a silent video without prompting",
+    )
     parser.add_argument(
         "--output",
         type=Path,
@@ -112,6 +153,52 @@ def resolve_final_video(directory: Path, number: int) -> Path:
     return available[number]
 
 
+def prompt_for_music(input_fn=None) -> bool:
+    if input_fn is None:
+        input_fn = input
+    while True:
+        try:
+            answer = input_fn("Adicionar música de fundo? [Y/n] ").strip().lower()
+        except EOFError:
+            return True
+        if answer in {"", "y", "yes", "s", "sim"}:
+            return True
+        if answer in {"n", "no", "nao", "não"}:
+            return False
+        print("Responda com Y/sim ou n/não.", file=sys.stderr)
+
+
+def prompt_for_music_url(input_fn=None) -> str:
+    if input_fn is None:
+        input_fn = input
+    while True:
+        try:
+            url = input_fn("URL do TikTok: ").strip()
+        except EOFError as exc:
+            raise AudioDownloadError("TikTok URL was not provided") from exc
+        if url:
+            return url
+        print("Informe a URL do TikTok.", file=sys.stderr)
+
+
+def resolve_cli_music(
+    args: argparse.Namespace,
+    input_fn=None,
+    downloader: Callable[..., Path] = download_audio,
+) -> Path | None:
+    if args.music is not None:
+        return args.music
+    if args.music_url is not None:
+        return downloader(args.music_url)
+    if args.with_music:
+        return DEFAULT_MUSIC
+    if args.no_music:
+        return None
+    if not prompt_for_music(input_fn):
+        return None
+    return downloader(prompt_for_music_url(input_fn))
+
+
 def load_captions(path: Path, language: str) -> list[str]:
     try:
         with path.open(encoding="utf-8") as source:
@@ -137,6 +224,30 @@ def load_captions(path: Path, language: str) -> list[str]:
             f"Language '{language}' must contain only non-empty caption strings"
         )
     return captions
+
+
+def load_carousel_caption(path: Path, language: str) -> str:
+    try:
+        with path.open(encoding="utf-8") as source:
+            document = json.load(source)
+    except json.JSONDecodeError as exc:
+        raise VideoMakerError(
+            f"Invalid JSON in {path}: line {exc.lineno}, column {exc.colno}"
+        ) from exc
+    except OSError as exc:
+        raise VideoMakerError(f"Could not read {path}: {exc}") from exc
+
+    try:
+        caption = document[language]["carousel"]
+    except (KeyError, TypeError) as exc:
+        raise VideoMakerError(
+            f"Missing carousel caption for language '{language}' in {path}"
+        ) from exc
+    if not isinstance(caption, str) or not caption.strip():
+        raise VideoMakerError(
+            f"Carousel caption for language '{language}' must be a non-empty string"
+        )
+    return caption
 
 
 def select_caption(captions: Sequence[str], index: int | None) -> tuple[int, str]:
@@ -236,6 +347,9 @@ def make_video(
     subtitle: Path,
     output: Path,
     overwrite: bool,
+    final_subtitle: Path | None = None,
+    music: Path | None = None,
+    music_volume: float = 1.0,
 ) -> None:
     subtitle_filter = escape_filter_path(subtitle)
     normalize = (
@@ -243,9 +357,13 @@ def make_video(
         "crop=1080:1920:(in_w-out_w)/2:(in_h-out_h)/2,"
         "fps=60,setsar=1,setpts=PTS-STARTPTS"
     )
+    ending_filter = normalize
+    if final_subtitle is not None:
+        final_subtitle_filter = escape_filter_path(final_subtitle)
+        ending_filter += f",ass=filename='{final_subtitle_filter}'"
     filter_graph = (
         f"[0:v]{normalize},ass=filename='{subtitle_filter}'[captioned];"
-        f"[1:v]{normalize}[ending];"
+        f"[1:v]{ending_filter}[ending];"
         "[captioned][ending]concat=n=2:v=1:a=0,format=yuv420p[outv]"
     )
     command = [
@@ -256,6 +374,14 @@ def make_video(
         str(first),
         "-i",
         str(final),
+    ]
+    if music is not None:
+        command.extend(["-stream_loop", "-1", "-i", str(music)])
+        filter_graph += (
+            f";[2:a]volume={music_volume:.4f},"
+            "aresample=48000,asetpts=PTS-STARTPTS[aout]"
+        )
+    command.extend([
         "-filter_complex",
         filter_graph,
         "-map",
@@ -270,8 +396,15 @@ def make_video(
         "yuv420p",
         "-movflags",
         "+faststart",
-        str(output),
-    ]
+    ])
+    if music is None:
+        # Explicitly discard every audio stream from both video inputs.
+        command.append("-an")
+    else:
+        command.extend(
+            ["-map", "[aout]", "-c:a", "aac", "-b:a", "192k", "-shortest"]
+        )
+    command.append(str(output))
     try:
         subprocess.run(command, check=True)
     except subprocess.CalledProcessError as exc:
@@ -284,6 +417,10 @@ def run(args: argparse.Namespace) -> tuple[int, str, Path]:
         language=args.language,
         index=args.index,
         position=args.position,
+        carousel=args.carousel,
+        carousel_position=args.carousel_position,
+        music_path=args.music,
+        music_volume=args.music_volume,
         first_path=args.first,
         final_path=final_path,
         data_path=args.data,
@@ -297,6 +434,10 @@ def generate_video(
     language: str = "en",
     index: int | None = None,
     position: str = "top",
+    carousel: bool = False,
+    carousel_position: str = "top",
+    music_path: Path | None = DEFAULT_MUSIC,
+    music_volume: float = 1.0,
     first_path: Path = DEFAULT_FIRST,
     final_path: Path,
     data_path: Path = DEFAULT_DATA,
@@ -308,12 +449,19 @@ def generate_video(
         raise VideoMakerError(f"Unsupported language: {language}")
     if position not in POSITIONS:
         raise VideoMakerError(f"Unsupported caption position: {position}")
+    if carousel_position not in POSITIONS:
+        raise VideoMakerError(
+            f"Unsupported carousel caption position: {carousel_position}"
+        )
+    if not 0 <= music_volume <= 1:
+        raise VideoMakerError("Music volume must be between 0 and 1")
 
     ffmpeg = ensure_program("ffmpeg")
     ffprobe = ensure_program("ffprobe")
     first = require_file(first_path, "First video")
     final = require_file(final_path, "Final video")
     data = require_file(data_path, "Caption data")
+    music = require_file(music_path, "Background music") if music_path else None
     automatic_output = output_path is None
     selected_output = default_output_path(first) if automatic_output else output_path
     output = selected_output.expanduser().resolve()
@@ -331,14 +479,33 @@ def generate_video(
 
     captions = load_captions(data, language)
     selected_index, caption = select_caption(captions, index)
-    duration = probe_duration(ffprobe, first)
+    first_duration = probe_duration(ffprobe, first)
+    carousel_caption = load_carousel_caption(data, language) if carousel else None
+    final_duration = probe_duration(ffprobe, final) if carousel else None
 
     with tempfile.TemporaryDirectory(prefix="viral-maker-") as temp_dir:
         subtitle = Path(temp_dir) / "caption.ass"
         subtitle.write_text(
-            create_ass(caption, duration, position), encoding="utf-8"
+            create_ass(caption, first_duration, position), encoding="utf-8"
         )
-        make_video(ffmpeg, first, final, subtitle, output, overwrite)
+        final_subtitle = None
+        if carousel_caption is not None and final_duration is not None:
+            final_subtitle = Path(temp_dir) / "carousel.ass"
+            final_subtitle.write_text(
+                create_ass(carousel_caption, final_duration, carousel_position),
+                encoding="utf-8",
+            )
+        make_video(
+            ffmpeg,
+            first,
+            final,
+            subtitle,
+            output,
+            overwrite,
+            final_subtitle,
+            music,
+            music_volume,
+        )
 
     return selected_index, caption, output
 
@@ -346,12 +513,15 @@ def generate_video(
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        args.music = resolve_cli_music(args)
         selected_index, caption, output = run(args)
-    except VideoMakerError as exc:
+    except (AudioDownloadError, VideoMakerError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
     print(f"Caption #{selected_index} ({args.language}): {caption}")
+    if args.carousel:
+        print(f"Carousel prompt: enabled ({args.carousel_position})")
     print(f"Created: {output}")
     return 0
 

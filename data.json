@@ -1,5 +1,6 @@
 {
   "en": {
+    "carousel": "Her reply >>>",
     "data": [
       "POV: you discover an AI that talks about anything with no filter… and it still remembers every detail you told it",
       "POV: you try an AI “just out of curiosity” and it starts saying things no one else would",
@@ -24,6 +25,7 @@
     ]
   },
   "ja": {
+    "carousel": "彼女の返事 >>>",
     "data": [
       "POV：何でもフィルターなしで話せるAIを見つけた…しかも、あなたが話した細かいことまで全部覚えてる",
       "POV：ただの好奇心でAIを試してみたら、誰も言わないようなことまで話し始めた",
@@ -48,6 +50,7 @@
     ]
   },
   "pt": {
+    "carousel": "Resposta dela >>>",
     "data": [
       "POV: você descobre que essa IA fala de tudo sem filtro… e ainda lembra de cada detalhe que você contou",
       "POV: quando você testa uma IA “só por curiosidade” e ela começa a responder coisas que ninguém mais fala",

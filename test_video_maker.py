@@ -13,7 +13,12 @@ from video_maker import (
     escape_ass_text,
     load_captions,
     list_final_videos,
+    load_carousel_caption,
+    make_video,
+    prompt_for_music,
+    prompt_for_music_url,
     resolve_final_video,
+    resolve_cli_music,
     select_caption,
 )
 
@@ -50,6 +55,23 @@ class CaptionTests(unittest.TestCase):
             default_output_path(Path("videos/12.mp4"), moment),
             Path("outputs/20260915_143052_12.mp4"),
         )
+
+    def test_loads_carousel_caption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "data.json"
+            path.write_text(
+                json.dumps({"pt": {"carousel": "Resposta dela >>>"}})
+            )
+            self.assertEqual(
+                load_carousel_caption(path, "pt"), "Resposta dela >>>"
+            )
+
+    def test_rejects_missing_carousel_caption(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "data.json"
+            path.write_text(json.dumps({"pt": {"data": ["texto"]}}))
+            with self.assertRaisesRegex(VideoMakerError, "Missing carousel"):
+                load_carousel_caption(path, "pt")
 
 
 class SubtitleTests(unittest.TestCase):
@@ -89,6 +111,132 @@ class FinalVideoTests(unittest.TestCase):
             (root / "1.mp4").touch()
             with self.assertRaisesRegex(VideoMakerError, "Available: 1"):
                 resolve_final_video(root, 2)
+
+
+class FfmpegCommandTests(unittest.TestCase):
+    @patch("video_maker.subprocess.run")
+    def test_output_explicitly_discards_audio(self, run_process):
+        make_video(
+            "ffmpeg",
+            Path("first.mp4"),
+            Path("final.mp4"),
+            Path("caption.ass"),
+            Path("output.mp4"),
+            False,
+        )
+
+        command = run_process.call_args.args[0]
+        self.assertIn("-an", command)
+        filter_graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("concat=n=2:v=1:a=0", filter_graph)
+
+    @patch("video_maker.subprocess.run")
+    def test_adds_carousel_subtitle_filter_to_final_video(self, run_process):
+        make_video(
+            "ffmpeg",
+            Path("first.mp4"),
+            Path("final.mp4"),
+            Path("caption.ass"),
+            Path("output.mp4"),
+            False,
+            Path("carousel.ass"),
+        )
+
+        command = run_process.call_args.args[0]
+        filter_graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("[1:v]scale=", filter_graph)
+        self.assertIn("ass=filename='carousel.ass'[ending]", filter_graph)
+
+    @patch("video_maker.subprocess.run")
+    def test_replaces_original_audio_with_looped_background_music(self, run_process):
+        make_video(
+            "ffmpeg",
+            Path("first.mp4"),
+            Path("final.mp4"),
+            Path("caption.ass"),
+            Path("output.mp4"),
+            False,
+            music=Path("music.mp3"),
+            music_volume=0.2,
+        )
+
+        command = run_process.call_args.args[0]
+        self.assertEqual(command[command.index("-stream_loop") + 1], "-1")
+        self.assertIn("[aout]", command)
+        self.assertIn("-shortest", command)
+        self.assertNotIn("-an", command)
+        filter_graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("[2:a]volume=0.2000", filter_graph)
+
+
+class MusicPromptTests(unittest.TestCase):
+    def test_default_music_volume_is_full(self):
+        parser = __import__("video_maker").build_parser()
+        self.assertEqual(parser.parse_args(["--no-music"]).music_volume, 1.0)
+
+    def test_empty_answer_accepts_default_music(self):
+        self.assertTrue(prompt_for_music(lambda _prompt: ""))
+
+    def test_accepts_portuguese_yes(self):
+        self.assertTrue(prompt_for_music(lambda _prompt: "sim"))
+
+    def test_accepts_no(self):
+        self.assertFalse(prompt_for_music(lambda _prompt: "n"))
+
+    def test_requires_non_empty_music_url(self):
+        answers = iter(["", "https://vm.tiktok.com/example/"])
+        self.assertEqual(
+            prompt_for_music_url(lambda _prompt: next(answers)),
+            "https://vm.tiktok.com/example/",
+        )
+
+    def test_yes_downloads_tiktok_audio(self):
+        parser = __import__("video_maker").build_parser()
+        args = parser.parse_args([])
+        answers = iter(["y", "https://vm.tiktok.com/example/"])
+        calls = []
+
+        def downloader(url):
+            calls.append(url)
+            return Path("audio/123.mp3")
+
+        selected = resolve_cli_music(
+            args, lambda _prompt: next(answers), downloader=downloader
+        )
+        self.assertEqual(selected, Path("audio/123.mp3"))
+        self.assertEqual(calls, ["https://vm.tiktok.com/example/"])
+
+    def test_music_url_downloads_without_prompt(self):
+        parser = __import__("video_maker").build_parser()
+        args = parser.parse_args(
+            ["--music-url", "https://vm.tiktok.com/example/"]
+        )
+
+        selected = resolve_cli_music(
+            args,
+            lambda _prompt: self.fail("prompt should not be called"),
+            downloader=lambda _url: Path("audio/456.mp3"),
+        )
+        self.assertEqual(selected, Path("audio/456.mp3"))
+
+    def test_explicit_flags_skip_prompt(self):
+        parser = __import__("video_maker").build_parser()
+        with_music = parser.parse_args(["--with-music"])
+        without_music = parser.parse_args(["--no-music"])
+        custom_music = parser.parse_args(["--music", "audio/custom.mp3"])
+
+        def unexpected_prompt(_prompt):
+            self.fail("prompt should not be called")
+
+        self.assertEqual(
+            resolve_cli_music(with_music, unexpected_prompt),
+            Path("audio/ssstik.io_1789458727141.mp3"),
+        )
+        self.assertIsNone(resolve_cli_music(without_music, unexpected_prompt))
+        self.assertEqual(
+            resolve_cli_music(custom_music, unexpected_prompt),
+            Path("audio/custom.mp3"),
+        )
 
 
 if __name__ == "__main__":

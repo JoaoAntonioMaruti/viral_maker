@@ -24,6 +24,7 @@ OUTPUT_DIRECTORY = PROJECT_ROOT / "outputs"
 FIRST_VIDEO = PROJECT_ROOT / "videos" / "1.mp4"
 FINAL_VIDEO_DIRECTORY = PROJECT_ROOT / "videos" / "final_videos"
 CAPTION_DATA = PROJECT_ROOT / "data.json"
+MUSIC_FILE = PROJECT_ROOT / "audio" / "ssstik.io_1789458727141.mp3"
 
 # Video encoding is CPU-heavy. A single worker processes one video at a time.
 render_lock = Lock()
@@ -40,6 +41,10 @@ class VideoCreate(BaseModel):
     index: int | None = Field(default=None, ge=1)
     position: Literal["top", "center", "bottom"] = "top"
     final: int = Field(default=1, ge=1)
+    carousel: bool = False
+    carousel_position: Literal["top", "center", "bottom"] = "top"
+    music: bool = True
+    music_volume: float = Field(default=1.0, ge=0, le=1)
 
 
 class VideoResult(BaseModel):
@@ -50,6 +55,10 @@ class VideoResult(BaseModel):
     caption: str
     position: Literal["top", "center", "bottom"]
     final: int
+    carousel: bool
+    carousel_position: Literal["top", "center", "bottom"]
+    music: bool
+    music_volume: float
     download_url: str
 
 
@@ -104,6 +113,10 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
                 language=payload.language,
                 index=payload.index,
                 position=payload.position,
+                carousel=payload.carousel,
+                carousel_position=payload.carousel_position,
+                music_path=MUSIC_FILE if payload.music else None,
+                music_volume=payload.music_volume,
                 first_path=FIRST_VIDEO,
                 final_path=final_video,
                 data_path=CAPTION_DATA,
@@ -121,6 +134,10 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
         caption=caption,
         position=payload.position,
         final=payload.final,
+        carousel=payload.carousel,
+        carousel_position=payload.carousel_position,
+        music=payload.music,
+        music_volume=payload.music_volume,
         download_url=str(request.url_for("download_video", video_id=video_id)),
     )
 
