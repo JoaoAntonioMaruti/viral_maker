@@ -15,6 +15,7 @@ URL ou um arquivo explícito, o vídeo sai sem trilha sonora.
 - ImageMagick (`magick`, usado para compor o texto com a seta do carrossel)
 - yt-dlp (necessário para baixar áudio do TikTok)
 - Fonte `Noto Sans CJK JP` (incluída no pacote Noto CJK de várias distribuições)
+- Chromium gerenciado pelo Playwright (`make setup` instala automaticamente)
 
 ## Uso
 
@@ -215,6 +216,84 @@ Depois, use o caminho exibido pelo comando na montagem:
 
 ```bash
 python3 video_maker.py --music audio/123.mp3
+```
+
+## Screenshots de páginas web
+
+Capture o viewport de uma página como PNG usando Chromium headless:
+
+```bash
+.venv/bin/python screenshot.py https://example.com \
+  --width 1080 \
+  --height 1920 \
+  --npc-id NPC_ID \
+  --output screenshot.png
+```
+
+O argumento `--output` é opcional. Quando omitido, o arquivo é criado em
+`outputs/` seguindo o padrão de timestamp dos vídeos, por exemplo
+`outputs/20260915_143052_screenshot.png`.
+
+Também é possível executar um arquivo JavaScript depois do carregamento,
+aguardar um seletor visível e aplicar um delay adicional em milissegundos:
+
+```bash
+.venv/bin/python screenshot.py https://example.com \
+  --width 1080 \
+  --height 1920 \
+  --npc-id NPC_ID \
+  --js inject.js \
+  --wait-for '#marketing-card' \
+  --delay 2000 \
+  --output screenshot.png
+```
+
+Quando `--wait-for` e `--delay` são usados juntos, o seletor é aguardado
+primeiro. A saída existente só é substituída quando `--overwrite` é informado.
+O Chromium e o contexto da página são fechados automaticamente mesmo em caso
+de erro.
+
+Para acompanhar a automação com a janela do Chromium visível, adicione
+`--headed`:
+
+```bash
+.venv/bin/python screenshot.py http://127.0.0.1:3000/play \
+  --width 1080 \
+  --height 1920 \
+  --npc-id NPC_ID \
+  --clothes default \
+  --js assets/inject.js \
+  --delay 2000 \
+  --headed \
+  --output screenshot.png
+```
+
+Os dados do chat mockado também podem ser substituídos pela CLI. Repita
+`--action` para informar mais de uma ação:
+
+```bash
+.venv/bin/python screenshot.py http://127.0.0.1:3000/play \
+  --width 540 \
+  --height 960 \
+  --npc-id NPC_ID \
+  --clothes school_uniform \
+  --npc-name 'ハナ' \
+  --description 'Descrição da cena' \
+  --message 'Mensagem do diálogo' \
+  --action 'Primeira ação' \
+  --action 'Segunda ação' \
+  --js assets/inject.js \
+  --headed
+```
+
+Sem esses campos opcionais, são usados os textos japoneses padrão definidos em
+`screenshot.py`. A roupa padrão é `default`.
+
+Se as dependências tiverem sido instaladas manualmente, instale também o
+navegador usado pelo Playwright:
+
+```bash
+.venv/bin/playwright install chromium
 ```
 
 ## Testes

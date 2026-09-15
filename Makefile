@@ -3,6 +3,7 @@ VENV := .venv
 VENV_PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 UVICORN := $(VENV)/bin/uvicorn
+PLAYWRIGHT := $(VENV)/bin/playwright
 HOST ?= 0.0.0.0
 PORT ?= 8000
 
@@ -11,12 +12,12 @@ PORT ?= 8000
 help: ## Mostra os comandos disponíveis
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  %-12s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-setup: $(VENV)/bin/activate ## Cria o ambiente e instala as dependências
-
-$(VENV)/bin/activate: requirements.txt
-	$(PYTHON) -m venv $(VENV)
+setup: $(VENV)/bin/activate ## Cria o ambiente, instala dependências e o Chromium
 	$(PIP) install -r requirements.txt
-	@touch $(VENV)/bin/activate
+	$(PLAYWRIGHT) install chromium
+
+$(VENV)/bin/activate:
+	$(PYTHON) -m venv $(VENV)
 
 dev: setup ## Inicia a API com recarregamento automático
 	$(UVICORN) api:app --host $(HOST) --port $(PORT) --reload
