@@ -99,7 +99,7 @@ def get_final_videos() -> list[FinalVideo]:
 
 
 @app.post(
-    "/videos",
+    "/videos/reaction",
     response_model=VideoResult,
     status_code=status.HTTP_201_CREATED,
 )

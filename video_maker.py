@@ -22,6 +22,10 @@ DEFAULT_FINAL_DIRECTORY = Path("videos/final_videos")
 DEFAULT_DATA = Path("data.json")
 DEFAULT_OUTPUT_DIRECTORY = Path("outputs")
 DEFAULT_MUSIC = Path("audio/ssstik.io_1789458727141.mp3")
+DEFAULT_CAROUSEL_ARROW = Path("assets/right-arrow.png")
+CAROUSEL_FONT_SIZE = 68
+CAROUSEL_ARROW_SIZE = 52
+CAROUSEL_ARROW_COUNT = 3
 LANGUAGES = ("en", "pt", "ja")
 POSITIONS = ("top", "center", "bottom")
 
@@ -335,6 +339,55 @@ Dialogue: 0,0:00:00.00,{end},Social,,0,0,0,,{text}
 """
 
 
+def create_carousel_overlay(
+    magick: str, caption: str, arrow: Path, output: Path
+) -> None:
+    command = [
+        magick,
+        "-background",
+        "none",
+        "-gravity",
+        "center",
+        "(",
+        "-font",
+        "Noto-Sans-CJK-JP-Black",
+        "-pointsize",
+        str(CAROUSEL_FONT_SIZE),
+        "-fill",
+        "white",
+        "-stroke",
+        "black",
+        "-strokewidth",
+        "5",
+        f"label:{caption}",
+        ")",
+        "(",
+        "-size",
+        "18x1",
+        "xc:none",
+        ")",
+    ]
+    for arrow_index in range(CAROUSEL_ARROW_COUNT):
+        if arrow_index:
+            command.extend(["(", "-size", "6x1", "xc:none", ")"])
+        command.extend(
+            [
+                "(",
+                str(arrow),
+                "-resize",
+                f"{CAROUSEL_ARROW_SIZE}x{CAROUSEL_ARROW_SIZE}",
+                ")",
+            ]
+        )
+    command.extend(["+append", str(output)])
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise VideoMakerError(
+            f"Could not create carousel caption image (exit code {exc.returncode})"
+        ) from exc
+
+
 def escape_filter_path(path: Path) -> str:
     # FFmpeg parses filter arguments even when subprocess avoids a shell.
     return str(path).replace("\\", r"\\").replace(":", r"\:").replace("'", r"\'")
@@ -347,9 +400,10 @@ def make_video(
     subtitle: Path,
     output: Path,
     overwrite: bool,
-    final_subtitle: Path | None = None,
+    carousel_overlay: Path | None = None,
     music: Path | None = None,
     music_volume: float = 1.0,
+    carousel_position: str = "top",
 ) -> None:
     subtitle_filter = escape_filter_path(subtitle)
     normalize = (
@@ -357,13 +411,24 @@ def make_video(
         "crop=1080:1920:(in_w-out_w)/2:(in_h-out_h)/2,"
         "fps=60,setsar=1,setpts=PTS-STARTPTS"
     )
-    ending_filter = normalize
-    if final_subtitle is not None:
-        final_subtitle_filter = escape_filter_path(final_subtitle)
-        ending_filter += f",ass=filename='{final_subtitle_filter}'"
-    filter_graph = (
-        f"[0:v]{normalize},ass=filename='{subtitle_filter}'[captioned];"
-        f"[1:v]{ending_filter}[ending];"
+    filters = [f"[0:v]{normalize},ass=filename='{subtitle_filter}'[captioned]"]
+    carousel_input = 3 if music is not None else 2
+    if carousel_overlay is None:
+        filters.append(f"[1:v]{normalize}[ending]")
+    else:
+        overlay_y = {
+            "top": "170",
+            "center": "(main_h-overlay_h)/2",
+            "bottom": "main_h-overlay_h-300",
+        }[carousel_position]
+        filters.extend(
+            [
+                f"[1:v]{normalize}[endingbase]",
+                f"[endingbase][{carousel_input}:v]overlay="
+                f"x=(main_w-overlay_w)/2:y={overlay_y}:shortest=1[ending]",
+            ]
+        )
+    filters.append(
         "[captioned][ending]concat=n=2:v=1:a=0,format=yuv420p[outv]"
     )
     command = [
@@ -377,10 +442,13 @@ def make_video(
     ]
     if music is not None:
         command.extend(["-stream_loop", "-1", "-i", str(music)])
-        filter_graph += (
-            f";[2:a]volume={music_volume:.4f},"
+        filters.append(
+            f"[2:a]volume={music_volume:.4f},"
             "aresample=48000,asetpts=PTS-STARTPTS[aout]"
         )
+    if carousel_overlay is not None:
+        command.extend(["-loop", "1", "-i", str(carousel_overlay)])
+    filter_graph = ";".join(filters)
     command.extend([
         "-filter_complex",
         filter_graph,
@@ -481,19 +549,22 @@ def generate_video(
     selected_index, caption = select_caption(captions, index)
     first_duration = probe_duration(ffprobe, first)
     carousel_caption = load_carousel_caption(data, language) if carousel else None
-    final_duration = probe_duration(ffprobe, final) if carousel else None
 
     with tempfile.TemporaryDirectory(prefix="viral-maker-") as temp_dir:
         subtitle = Path(temp_dir) / "caption.ass"
         subtitle.write_text(
             create_ass(caption, first_duration, position), encoding="utf-8"
         )
-        final_subtitle = None
-        if carousel_caption is not None and final_duration is not None:
-            final_subtitle = Path(temp_dir) / "carousel.ass"
-            final_subtitle.write_text(
-                create_ass(carousel_caption, final_duration, carousel_position),
-                encoding="utf-8",
+        carousel_overlay = None
+        if carousel_caption is not None:
+            magick = ensure_program("magick")
+            arrow = require_file(DEFAULT_CAROUSEL_ARROW, "Carousel arrow")
+            carousel_overlay = Path(temp_dir) / "carousel.png"
+            create_carousel_overlay(
+                magick,
+                carousel_caption,
+                arrow,
+                carousel_overlay,
             )
         make_video(
             ffmpeg,
@@ -502,9 +573,10 @@ def generate_video(
             subtitle,
             output,
             overwrite,
-            final_subtitle,
+            carousel_overlay,
             music,
             music_volume,
+            carousel_position,
         )
 
     return selected_index, caption, output

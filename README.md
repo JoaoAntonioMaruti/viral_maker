@@ -11,6 +11,7 @@ fundo, com 100% de volume.
 
 - Python 3.10 ou superior
 - FFmpeg e FFprobe
+- ImageMagick (`magick`, usado para compor o texto com a seta do carrossel)
 - yt-dlp (necessário para baixar áudio do TikTok)
 - Fonte `Noto Sans CJK JP` (incluída no pacote Noto CJK de várias distribuições)
 
@@ -46,7 +47,9 @@ python3 video_maker.py --no-music
 ```
 
 Para indicar que existe uma imagem no próximo item do carrossel, adicione o
-texto localizado de `data.json` ao vídeo final:
+texto localizado de `data.json` ao vídeo final. A indicação usa três cópias do
+emoji de seta do iOS em `assets/right-arrow.png`, dimensionadas abaixo da altura
+da fonte:
 
 ```bash
 python3 video_maker.py --final 2 --carousel --carousel-position top
@@ -88,7 +91,7 @@ A documentação interativa estará disponível em `http://localhost:8000/docs`.
 Crie um vídeo:
 
 ```bash
-curl -X POST http://localhost:8000/videos \
+curl -X POST http://localhost:8000/videos/reaction \
   -H 'Content-Type: application/json' \
   -d '{"language":"pt","index":3,"position":"center","final":2,"carousel":true,"carousel_position":"top","music":true,"music_volume":1.0}'
 ```

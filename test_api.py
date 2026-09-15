@@ -37,6 +37,15 @@ class ApiTests(unittest.TestCase):
     def test_health(self):
         self.assertEqual(api.health(), {"status": "ok"})
 
+    def test_reaction_route_is_registered(self):
+        routes = {
+            (route.path, method)
+            for route in api.app.routes
+            for method in getattr(route, "methods", set())
+        }
+        self.assertIn(("/videos/reaction", "POST"), routes)
+        self.assertNotIn(("/videos", "POST"), routes)
+
     def test_default_music_volume_is_full(self):
         self.assertEqual(api.VideoCreate().music_volume, 1.0)
 

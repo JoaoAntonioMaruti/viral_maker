@@ -9,6 +9,7 @@ from video_maker import (
     VideoMakerError,
     ass_timestamp,
     create_ass,
+    create_carousel_overlay,
     default_output_path,
     escape_ass_text,
     load_captions,
@@ -131,7 +132,7 @@ class FfmpegCommandTests(unittest.TestCase):
         self.assertIn("concat=n=2:v=1:a=0", filter_graph)
 
     @patch("video_maker.subprocess.run")
-    def test_adds_carousel_subtitle_filter_to_final_video(self, run_process):
+    def test_adds_carousel_image_to_final_video(self, run_process):
         make_video(
             "ffmpeg",
             Path("first.mp4"),
@@ -139,13 +140,29 @@ class FfmpegCommandTests(unittest.TestCase):
             Path("caption.ass"),
             Path("output.mp4"),
             False,
-            Path("carousel.ass"),
+            Path("carousel.png"),
         )
 
         command = run_process.call_args.args[0]
         filter_graph = command[command.index("-filter_complex") + 1]
         self.assertIn("[1:v]scale=", filter_graph)
-        self.assertIn("ass=filename='carousel.ass'[ending]", filter_graph)
+        self.assertIn("[endingbase][2:v]overlay=", filter_graph)
+        self.assertIn("y=170:shortest=1[ending]", filter_graph)
+
+    @patch("video_maker.subprocess.run")
+    def test_carousel_image_uses_three_arrows_smaller_than_font(self, run_process):
+        create_carousel_overlay(
+            "magick",
+            "Resposta dela",
+            Path("right-arrow.png"),
+            Path("carousel.png"),
+        )
+
+        command = run_process.call_args.args[0]
+        self.assertEqual(command[command.index("-pointsize") + 1], "68")
+        self.assertEqual(command[command.index("-resize") + 1], "52x52")
+        self.assertEqual(command.count("right-arrow.png"), 3)
+        self.assertIn("Noto-Sans-CJK-JP-Black", command)
 
     @patch("video_maker.subprocess.run")
     def test_replaces_original_audio_with_looped_background_music(self, run_process):
