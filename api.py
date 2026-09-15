@@ -8,6 +8,7 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from video_maker import (
@@ -24,7 +25,9 @@ OUTPUT_DIRECTORY = PROJECT_ROOT / "outputs"
 FIRST_VIDEO = PROJECT_ROOT / "videos" / "1.mp4"
 FINAL_VIDEO_DIRECTORY = PROJECT_ROOT / "videos" / "final_videos"
 CAPTION_DATA = PROJECT_ROOT / "data.json"
-MUSIC_FILE = PROJECT_ROOT / "audio" / "ssstik.io_1789458727141.mp3"
+AUDIO_DIRECTORY = PROJECT_ROOT / "audio"
+MUSIC_FILE = AUDIO_DIRECTORY / "ssstik.io_1789458727141.mp3"
+SUPPORTED_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 
 # Video encoding is CPU-heavy. A single worker processes one video at a time.
 render_lock = Lock()
@@ -71,6 +74,14 @@ class VideoStatus(BaseModel):
 class FinalVideo(BaseModel):
     number: int
     filename: str
+    url: str
+
+
+class AudioFile(BaseModel):
+    filename: str
+    size_bytes: int
+    is_default: bool
+    url: str
 
 
 def video_path(video_id: str) -> Path:
@@ -91,11 +102,37 @@ def health() -> dict[str, str]:
 def get_final_videos() -> list[FinalVideo]:
     try:
         return [
-            FinalVideo(number=number, filename=path.name)
+            FinalVideo(
+                number=number,
+                filename=path.name,
+                url=f"/media/videos/final_videos/{path.name}",
+            )
             for number, path in list_final_videos(FINAL_VIDEO_DIRECTORY)
         ]
     except VideoMakerError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.get("/audios", response_model=list[AudioFile])
+def get_audio_files() -> list[AudioFile]:
+    if not AUDIO_DIRECTORY.is_dir():
+        return []
+    default_music = MUSIC_FILE.resolve()
+    files = [
+        path
+        for path in AUDIO_DIRECTORY.iterdir()
+        if path.is_file() and path.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
+    ]
+    files.sort(key=lambda path: path.name.casefold())
+    return [
+        AudioFile(
+            filename=path.name,
+            size_bytes=path.stat().st_size,
+            is_default=path.resolve() == default_music,
+            url=f"/media/audios/{path.name}",
+        )
+        for path in files
+    ]
 
 
 @app.post(
@@ -156,3 +193,21 @@ def get_video_status(video_id: str, request: Request) -> VideoStatus:
 def download_video(video_id: str) -> FileResponse:
     path = video_path(video_id)
     return FileResponse(path, media_type="video/mp4", filename=path.name)
+
+
+# Static media mounts are declared after API routes so they cannot shadow them.
+app.mount(
+    "/media/audios",
+    StaticFiles(directory=AUDIO_DIRECTORY, check_dir=False),
+    name="audio-media",
+)
+app.mount(
+    "/media/videos",
+    StaticFiles(directory=PROJECT_ROOT / "videos", check_dir=False),
+    name="video-media",
+)
+app.mount(
+    "/media/outputs",
+    StaticFiles(directory=OUTPUT_DIRECTORY, check_dir=False),
+    name="output-media",
+)

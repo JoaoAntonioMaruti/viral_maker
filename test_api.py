@@ -29,6 +29,20 @@ class ApiTests(unittest.TestCase):
         )
         self.final_patch.start()
         self.addCleanup(self.final_patch.stop)
+        self.audio_directory = Path(self.temp_directory.name) / "audio"
+        self.audio_directory.mkdir()
+        default_music = self.audio_directory / "default.mp3"
+        default_music.write_bytes(b"default audio")
+        (self.audio_directory / "second.m4a").write_bytes(b"other")
+        (self.audio_directory / "ignore.txt").write_text("not audio")
+        self.audio_directory_patch = patch.object(
+            api, "AUDIO_DIRECTORY", self.audio_directory
+        )
+        self.music_file_patch = patch.object(api, "MUSIC_FILE", default_music)
+        self.audio_directory_patch.start()
+        self.music_file_patch.start()
+        self.addCleanup(self.audio_directory_patch.stop)
+        self.addCleanup(self.music_file_patch.stop)
         self.request = Mock()
         self.request.url_for.side_effect = (
             lambda _name, video_id: f"http://test/videos/{video_id}/download"
@@ -45,6 +59,15 @@ class ApiTests(unittest.TestCase):
         }
         self.assertIn(("/videos/reaction", "POST"), routes)
         self.assertNotIn(("/videos", "POST"), routes)
+        self.assertIn(("/audios", "GET"), routes)
+        mount_paths = {
+            route.path for route in api.app.routes if route.__class__.__name__ == "Mount"
+        }
+        self.assertTrue(
+            {"/media/audios", "/media/videos", "/media/outputs"}.issubset(
+                mount_paths
+            )
+        )
 
     def test_default_music_volume_is_full(self):
         self.assertEqual(api.VideoCreate().music_volume, 1.0)
@@ -53,10 +76,41 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             [video.model_dump() for video in api.get_final_videos()],
             [
-                {"number": 1, "filename": "1.mp4"},
-                {"number": 2, "filename": "2.mp4"},
+                {
+                    "number": 1,
+                    "filename": "1.mp4",
+                    "url": "/media/videos/final_videos/1.mp4",
+                },
+                {
+                    "number": 2,
+                    "filename": "2.mp4",
+                    "url": "/media/videos/final_videos/2.mp4",
+                },
             ],
         )
+
+    def test_lists_audio_files_without_exposing_server_paths(self):
+        self.assertEqual(
+            [audio.model_dump() for audio in api.get_audio_files()],
+            [
+                {
+                    "filename": "default.mp3",
+                    "size_bytes": 13,
+                    "is_default": True,
+                    "url": "/media/audios/default.mp3",
+                },
+                {
+                    "filename": "second.m4a",
+                    "size_bytes": 5,
+                    "is_default": False,
+                    "url": "/media/audios/second.m4a",
+                },
+            ],
+        )
+
+    def test_audio_list_is_empty_when_directory_does_not_exist(self):
+        with patch.object(api, "AUDIO_DIRECTORY", self.audio_directory / "missing"):
+            self.assertEqual(api.get_audio_files(), [])
 
     def test_create_video(self):
         generated = self.output_directory / "20260915_120000_1.mp4"

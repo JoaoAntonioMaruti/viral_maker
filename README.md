@@ -99,7 +99,33 @@ curl -X POST http://localhost:8000/videos/reaction \
 O processamento é síncrono: a resposta é enviada quando o vídeo estiver pronto.
 Ela contém o identificador, a legenda selecionada e a URL para download. Consulte
 `GET /videos/{id}` ou baixe com `GET /videos/{id}/download`. Consulte as opções
-de vídeo final com `GET /finals`.
+de vídeo final com `GET /finals` e as músicas disponíveis com `GET /audios`.
+
+Exemplo da listagem de músicas:
+
+```bash
+curl http://localhost:8000/audios
+```
+
+Cada item contém `filename`, `size_bytes` e `is_default`; caminhos internos do
+servidor não são retornados. O campo `url` aponta para o arquivo servido por HTTP.
+
+As pastas de mídia também são expostas diretamente, com suporte a streaming:
+
+```text
+GET /media/audios/{filename}
+GET /media/videos/{path}
+GET /media/outputs/{filename}
+```
+
+Exemplos:
+
+```text
+http://localhost:8000/media/audios/7559553583222607107.mp3
+http://localhost:8000/media/videos/1.mp4
+http://localhost:8000/media/videos/final_videos/2.mp4
+http://localhost:8000/media/outputs/20260915_051435_1.mp4
+```
 
 ## Baixar áudio do TikTok
 
