@@ -36,7 +36,6 @@ python3 video_maker.py \
   --final 2 \
   --final-directory videos/final_videos \
   --data data.json \
-  --output resultado.mp4 \
   --language ja \
   --position bottom
 ```
