@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import json
+import os
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -20,6 +22,16 @@ class ApiTests(unittest.TestCase):
         self.output_patch = patch.object(api, "OUTPUT_DIRECTORY", self.output_directory)
         self.output_patch.start()
         self.addCleanup(self.output_patch.stop)
+        self.video_directory = Path(self.temp_directory.name) / "videos"
+        self.video_directory.mkdir()
+        (self.video_directory / "1.mp4").write_bytes(b"first")
+        (self.video_directory / "3.mp4").write_bytes(b"third video")
+        (self.video_directory / "notes.txt").write_text("ignore")
+        self.video_directory_patch = patch.object(
+            api, "VIDEO_DIRECTORY", self.video_directory
+        )
+        self.video_directory_patch.start()
+        self.addCleanup(self.video_directory_patch.stop)
         self.final_directory = Path(self.temp_directory.name) / "finals"
         self.final_directory.mkdir()
         (self.final_directory / "1.mp4").write_bytes(b"final one")
@@ -43,6 +55,21 @@ class ApiTests(unittest.TestCase):
         self.music_file_patch.start()
         self.addCleanup(self.audio_directory_patch.stop)
         self.addCleanup(self.music_file_patch.stop)
+        self.caption_data = Path(self.temp_directory.name) / "data.json"
+        self.caption_data.write_text(
+            json.dumps(
+                {
+                    "pt": {
+                        "carousel": "Resposta dela",
+                        "data": ["Primeira", "Segunda"],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        self.caption_data_patch = patch.object(api, "CAPTION_DATA", self.caption_data)
+        self.caption_data_patch.start()
+        self.addCleanup(self.caption_data_patch.stop)
         self.request = Mock()
         self.request.url_for.side_effect = (
             lambda _name, video_id: f"http://test/videos/{video_id}/download"
@@ -58,8 +85,11 @@ class ApiTests(unittest.TestCase):
             for method in getattr(route, "methods", set())
         }
         self.assertIn(("/videos/reaction", "POST"), routes)
+        self.assertIn(("/videos", "GET"), routes)
         self.assertNotIn(("/videos", "POST"), routes)
         self.assertIn(("/audios", "GET"), routes)
+        self.assertIn(("/data", "GET"), routes)
+        self.assertIn(("/outputs", "GET"), routes)
         mount_paths = {
             route.path for route in api.app.routes if route.__class__.__name__ == "Mount"
         }
@@ -89,6 +119,29 @@ class ApiTests(unittest.TestCase):
             ],
         )
 
+    def test_lists_numbered_initial_videos(self):
+        self.assertEqual(
+            [video.model_dump() for video in api.get_initial_videos()],
+            [
+                {
+                    "number": 1,
+                    "filename": "1.mp4",
+                    "size_bytes": 5,
+                    "url": "/media/videos/1.mp4",
+                },
+                {
+                    "number": 3,
+                    "filename": "3.mp4",
+                    "size_bytes": 11,
+                    "url": "/media/videos/3.mp4",
+                },
+            ],
+        )
+
+    def test_initial_video_list_is_empty_when_directory_does_not_exist(self):
+        with patch.object(api, "VIDEO_DIRECTORY", self.video_directory / "missing"):
+            self.assertEqual(api.get_initial_videos(), [])
+
     def test_lists_audio_files_without_exposing_server_paths(self):
         self.assertEqual(
             [audio.model_dump() for audio in api.get_audio_files()],
@@ -112,6 +165,46 @@ class ApiTests(unittest.TestCase):
         with patch.object(api, "AUDIO_DIRECTORY", self.audio_directory / "missing"):
             self.assertEqual(api.get_audio_files(), [])
 
+    def test_filters_caption_data_by_language(self):
+        response = api.get_caption_data("pt")
+        self.assertEqual(
+            response.model_dump(),
+            {
+                "language": "pt",
+                "carousel": "Resposta dela",
+                "data": ["Primeira", "Segunda"],
+            },
+        )
+
+    def test_lists_outputs_newest_first(self):
+        older = self.output_directory / "20260915_120000_1.mp4"
+        newer = self.output_directory / "20260915_130000_2.mp4"
+        older.write_bytes(b"old")
+        newer.write_bytes(b"new video")
+        (self.output_directory / "ignore.txt").write_text("not video")
+        os.utime(older, (1_700_000_000, 1_700_000_000))
+        os.utime(newer, (1_800_000_000, 1_800_000_000))
+
+        outputs = [item.model_dump() for item in api.get_output_files()]
+        self.assertEqual(
+            [item["filename"] for item in outputs],
+            ["20260915_130000_2.mp4", "20260915_120000_1.mp4"],
+        )
+        self.assertEqual(outputs[0]["id"], "20260915_130000_2")
+        self.assertEqual(outputs[0]["size_bytes"], 9)
+        self.assertEqual(
+            outputs[0]["url"],
+            "/media/outputs/20260915_130000_2.mp4",
+        )
+        self.assertEqual(
+            outputs[0]["download_url"],
+            "/videos/20260915_130000_2/download",
+        )
+
+    def test_output_list_is_empty_when_directory_does_not_exist(self):
+        with patch.object(api, "OUTPUT_DIRECTORY", self.output_directory / "missing"):
+            self.assertEqual(api.get_output_files(), [])
+
     def test_create_video(self):
         generated = self.output_directory / "20260915_120000_1.mp4"
         generated.write_bytes(b"video")
@@ -128,10 +221,12 @@ class ApiTests(unittest.TestCase):
                     language="pt",
                     index=2,
                     position="center",
+                    video=3,
                     final=2,
                     carousel=True,
                     carousel_position="bottom",
                     music=True,
+                    music_filename="second.m4a",
                     music_volume=0.15,
                 ),
                 self.request,
@@ -139,11 +234,17 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.id, "20260915_120000_1")
         self.assertEqual(response.caption, "caption")
+        self.assertEqual(response.video, 3)
         self.assertEqual(response.final, 2)
         self.assertTrue(response.carousel)
         self.assertEqual(response.carousel_position, "bottom")
         self.assertTrue(response.music)
+        self.assertEqual(response.music_filename, "second.m4a")
         self.assertEqual(response.music_volume, 0.15)
+        self.assertEqual(
+            generate.call_args.kwargs["first_path"],
+            (self.video_directory / "3.mp4").resolve(),
+        )
         self.assertEqual(
             generate.call_args.kwargs["final_path"],
             (self.final_directory / "2.mp4").resolve(),
@@ -152,7 +253,10 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(
             generate.call_args.kwargs["carousel_position"], "bottom"
         )
-        self.assertEqual(generate.call_args.kwargs["music_path"], api.MUSIC_FILE)
+        self.assertEqual(
+            generate.call_args.kwargs["music_path"],
+            (self.audio_directory / "second.m4a").resolve(),
+        )
         self.assertEqual(generate.call_args.kwargs["music_volume"], 0.15)
         generate.assert_called_once()
 
@@ -182,6 +286,41 @@ class ApiTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as raised:
             api.create_video(api.VideoCreate(final=3), self.request)
         self.assertEqual(raised.exception.status_code, 400)
+
+    def test_rejects_missing_initial_video(self):
+        with self.assertRaises(HTTPException) as raised:
+            api.create_video(api.VideoCreate(video=2), self.request)
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("Available: 1, 3", raised.exception.detail)
+
+    def test_rejects_missing_audio_filename(self):
+        with self.assertRaises(HTTPException) as raised:
+            api.create_video(
+                api.VideoCreate(music=True, music_filename="missing.mp3"),
+                self.request,
+            )
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertIn("Audio file not found", raised.exception.detail)
+
+    def test_rejects_audio_path_traversal(self):
+        with self.assertRaisesRegex(api.VideoMakerError, "Invalid music filename"):
+            api.resolve_audio_file("../secret.mp3")
+
+    def test_music_disabled_ignores_filename(self):
+        generated = self.output_directory / "20260915_120001_1.mp4"
+        generated.write_bytes(b"video")
+        with (
+            patch.object(api, "default_output_path", return_value=generated),
+            patch.object(
+                api, "generate_video", return_value=(1, "caption", generated)
+            ) as generate,
+        ):
+            response = api.create_video(
+                api.VideoCreate(music=False, music_filename="missing.mp3"),
+                self.request,
+            )
+        self.assertIsNone(response.music_filename)
+        self.assertIsNone(generate.call_args.kwargs["music_path"])
 
 
 if __name__ == "__main__":
