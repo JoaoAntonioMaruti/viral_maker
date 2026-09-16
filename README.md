@@ -143,8 +143,16 @@ Consulte o histórico dos mocks de fala, do mais recente para o mais antigo:
 curl http://localhost:8000/screenshots/history
 ```
 
-Cada item contém os IDs e URLs do vídeo e screenshot, `npc_id`, `clothes`, URL
-do cliente, dimensões, nome, descrição, mensagem, ações e data de criação.
+Filtre pelo idioma (`en`, `pt` ou `ja`) com o parâmetro `language`:
+
+```bash
+curl 'http://localhost:8000/screenshots/history?language=ja'
+```
+
+Cada item contém os IDs e URLs do vídeo e screenshot, idioma, `npc_id`,
+`clothes`, URL do cliente, dimensões, nome, descrição, mensagem, ações e data de
+criação. Registros antigos, criados antes desse campo, retornam `language` como
+`null`.
 
 Liste os vídeos iniciais numerados:
 
@@ -262,6 +270,9 @@ Capture o viewport de uma página como PNG usando Chromium headless:
 O argumento `--output` é opcional. Quando omitido, o arquivo é criado em
 `outputs/` seguindo o padrão de timestamp dos vídeos, por exemplo
 `outputs/20260915_143052_screenshot.png`.
+
+A captura usa supersampling 2x e mantém o PNG nas dimensões informadas. Isso
+melhora a nitidez sem alterar o tamanho ou o layout dos componentes da página.
 
 Também é possível executar um arquivo JavaScript depois do carregamento,
 aguardar um seletor visível e aplicar um delay adicional em milissegundos:

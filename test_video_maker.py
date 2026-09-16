@@ -21,6 +21,7 @@ from video_maker import (
     resolve_final_video,
     resolve_cli_music,
     select_caption,
+    wrap_cjk_text,
 )
 
 
@@ -82,6 +83,13 @@ class SubtitleTests(unittest.TestCase):
     def test_escapes_ass_control_characters(self):
         self.assertEqual(escape_ass_text("a{b}\\c\nd"), r"a\{b\}\\c\Nd")
 
+    def test_hard_wraps_japanese_text(self):
+        self.assertEqual(
+            wrap_cjk_text("あ" * 17),
+            f"{'あ' * 16}\nあ",
+        )
+        self.assertEqual(wrap_cjk_text("Her reply"), "Her reply")
+
     def test_positions_map_to_ass_alignments(self):
         self.assertIn(",8,90,90,170,1", create_ass("top", 4, "top"))
         self.assertIn(",5,90,90,0,1", create_ass("center", 4, "center"))
@@ -141,16 +149,19 @@ class FfmpegCommandTests(unittest.TestCase):
             Path("output.mp4"),
             False,
             Path("carousel.png"),
+            carousel_subtitle=Path("carousel.ass"),
         )
 
         command = run_process.call_args.args[0]
         filter_graph = command[command.index("-filter_complex") + 1]
         self.assertIn("[1:v]scale=", filter_graph)
-        self.assertIn("[endingbase][2:v]overlay=", filter_graph)
-        self.assertIn("y=170:shortest=1[ending]", filter_graph)
+        self.assertIn("ass=filename='carousel.ass'[endingcaptioned]", filter_graph)
+        self.assertIn("[endingcaptioned][2:v]overlay=", filter_graph)
+        self.assertIn("x=main_w/2", filter_graph)
+        self.assertIn("y=190:shortest=1[ending]", filter_graph)
 
     @patch("video_maker.subprocess.run")
-    def test_carousel_image_uses_three_arrows_smaller_than_font(self, run_process):
+    def test_carousel_image_contains_only_three_arrows(self, run_process):
         create_carousel_overlay(
             "magick",
             "Resposta dela",
@@ -159,10 +170,11 @@ class FfmpegCommandTests(unittest.TestCase):
         )
 
         command = run_process.call_args.args[0]
-        self.assertEqual(command[command.index("-pointsize") + 1], "68")
+        self.assertEqual(command[command.index("-pointsize") + 1], "76")
+        self.assertIn("label:Resposta dela", command)
+        self.assertIn("35%x1+0+0", command)
         self.assertEqual(command[command.index("-resize") + 1], "52x52")
         self.assertEqual(command.count("right-arrow.png"), 3)
-        self.assertIn("Noto-Sans-CJK-JP-Black", command)
 
     @patch("video_maker.subprocess.run")
     def test_replaces_original_audio_with_looped_background_music(self, run_process):

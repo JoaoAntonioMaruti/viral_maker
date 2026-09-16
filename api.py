@@ -189,6 +189,7 @@ class ScreenshotMockHistory(BaseModel):
     description: str
     message: str
     actions: list[str]
+    language: Literal["en", "pt", "ja"] | None
     created_at: datetime
     video_url: str
     screenshot_url: str
@@ -396,9 +397,11 @@ def get_output_files() -> list[OutputFile]:
 
 
 @app.get("/screenshots/history", response_model=list[ScreenshotMockHistory])
-def get_screenshot_history() -> list[ScreenshotMockHistory]:
+def get_screenshot_history(
+    language: Literal["en", "pt", "ja"] | None = None,
+) -> list[ScreenshotMockHistory]:
     history = []
-    for record in fetch_screenshot_history(GENERATION_DATABASE_PATH):
+    for record in fetch_screenshot_history(GENERATION_DATABASE_PATH, language):
         video_file = OUTPUT_DIRECTORY / f"{record['video_id']}.mp4"
         screenshot_file = OUTPUT_DIRECTORY / f"{record['screenshot_id']}.png"
         if not video_file.is_file() or not screenshot_file.is_file():
@@ -481,6 +484,7 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
                     description=payload.description,
                     message=payload.message,
                     actions=payload.actions,
+                    language=payload.language,
                 )
     except ScreenshotError as exc:
         _remove_generated_files(screenshot_output, created_path)

@@ -22,9 +22,15 @@ DEFAULT_FINAL_DIRECTORY = Path("videos/final_videos")
 DEFAULT_DATA = Path("data.json")
 DEFAULT_OUTPUT_DIRECTORY = Path("outputs")
 DEFAULT_CAROUSEL_ARROW = Path("assets/right-arrow.png")
-CAROUSEL_FONT_SIZE = 68
+VIDEO_WIDTH = 1080
+VIDEO_HEIGHT = 1920
+CAPTION_FONT_NAME = "Noto Sans CJK JP"
+CAPTION_MAGICK_FONT_NAME = "Noto-Sans-CJK-JP-Bold"
+CAPTION_FONT_SIZE = 68
+CAROUSEL_FONT_SIZE = 76
 CAROUSEL_ARROW_SIZE = 52
 CAROUSEL_ARROW_COUNT = 3
+CAROUSEL_ARROW_GAP = 8
 LANGUAGES = ("en", "pt", "ja")
 POSITIONS = ("top", "center", "bottom")
 
@@ -308,22 +314,67 @@ def escape_ass_text(text: str) -> str:
     )
 
 
-def create_ass(caption: str, duration: float, position: str) -> str:
+def wrap_cjk_text(text: str, max_width: float = 16) -> str:
+    """Hard-wrap Japanese text because libass does not wrap CJK without spaces."""
+    if not any(
+        0x3000 <= ord(character) <= 0x30FF
+        or 0x3400 <= ord(character) <= 0x9FFF
+        or 0xFF00 <= ord(character) <= 0xFFEF
+        for character in text
+    ):
+        return text
+
+    lines = []
+    line = []
+    width = 0.0
+    for character in text:
+        if character in "\r\n":
+            if line:
+                lines.append("".join(line))
+                line = []
+            width = 0.0
+            continue
+        codepoint = ord(character)
+        is_cjk = (
+            0x3000 <= codepoint <= 0x30FF
+            or 0x3400 <= codepoint <= 0x9FFF
+            or 0xFF00 <= codepoint <= 0xFFEF
+        )
+        character_width = 1.0 if is_cjk else 0.55
+        if line and width + character_width > max_width:
+            lines.append("".join(line).rstrip())
+            line = []
+            width = 0.0
+        if not line and character.isspace():
+            continue
+        line.append(character)
+        width += character_width
+    if line:
+        lines.append("".join(line).rstrip())
+    return "\n".join(lines)
+
+
+def create_ass(
+    caption: str,
+    duration: float,
+    position: str,
+    font_size: int = CAPTION_FONT_SIZE,
+) -> str:
     # Margins leave room for common social-network UI overlays.
     alignment = {"top": 8, "center": 5, "bottom": 2}[position]
     vertical_margin = {"top": 170, "center": 0, "bottom": 300}[position]
     end = ass_timestamp(duration)
-    text = escape_ass_text(caption)
+    text = escape_ass_text(wrap_cjk_text(caption))
     return f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
+PlayResX: {VIDEO_WIDTH}
+PlayResY: {VIDEO_HEIGHT}
 WrapStyle: 0
 ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Social,Noto Sans CJK JP,68,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,{alignment},90,90,{vertical_margin},1
+Style: Social,{CAPTION_FONT_NAME},{font_size},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,5,2,{alignment},90,90,{vertical_margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -342,20 +393,21 @@ def create_carousel_overlay(
         "center",
         "(",
         "-font",
-        "Noto-Sans-CJK-JP-Black",
+        CAPTION_MAGICK_FONT_NAME,
         "-pointsize",
         str(CAROUSEL_FONT_SIZE),
         "-fill",
-        "white",
-        "-stroke",
-        "black",
-        "-strokewidth",
-        "5",
+        "transparent",
         f"label:{caption}",
+        "-crop",
+        # ImageMagick's point-size metrics are wider than libass metrics.
+        # Keeping 35% positions the arrows after half of the centered ASS text.
+        "35%x1+0+0",
+        "+repage",
         ")",
         "(",
         "-size",
-        "18x1",
+        f"{CAROUSEL_ARROW_GAP}x1",
         "xc:none",
         ")",
     ]
@@ -396,30 +448,39 @@ def make_video(
     music: Path | None = None,
     music_volume: float = 1.0,
     carousel_position: str = "top",
+    carousel_subtitle: Path | None = None,
 ) -> None:
     subtitle_filter = escape_filter_path(subtitle)
     normalize = (
-        "scale=1080:1920:force_original_aspect_ratio=increase,"
-        "crop=1080:1920:(in_w-out_w)/2:(in_h-out_h)/2,"
+        f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT}:(in_w-out_w)/2:(in_h-out_h)/2,"
         "fps=60,setsar=1,setpts=PTS-STARTPTS"
     )
     filters = [f"[0:v]{normalize},ass=filename='{subtitle_filter}'[captioned]"]
     carousel_input = 3 if music is not None else 2
-    if carousel_overlay is None:
+    if carousel_overlay is None and carousel_subtitle is None:
         filters.append(f"[1:v]{normalize}[ending]")
     else:
+        ending_filter = f"[1:v]{normalize}"
+        ending_label = "endingbase"
+        if carousel_subtitle is not None:
+            carousel_subtitle_filter = escape_filter_path(carousel_subtitle)
+            ending_filter += f",ass=filename='{carousel_subtitle_filter}'"
+            ending_label = "endingcaptioned"
+        filters.append(f"{ending_filter}[{ending_label}]")
+
+    if carousel_overlay is not None:
         overlay_y = {
-            "top": "170",
+            "top": "190",
             "center": "(main_h-overlay_h)/2",
-            "bottom": "main_h-overlay_h-300",
+            "bottom": "main_h-overlay_h-310",
         }[carousel_position]
-        filters.extend(
-            [
-                f"[1:v]{normalize}[endingbase]",
-                f"[endingbase][{carousel_input}:v]overlay="
-                f"x=(main_w-overlay_w)/2:y={overlay_y}:shortest=1[ending]",
-            ]
+        filters.append(
+            f"[{ending_label}][{carousel_input}:v]overlay="
+            f"x=main_w/2:y={overlay_y}:shortest=1[ending]"
         )
+    elif carousel_subtitle is not None:
+        filters.append(f"[{ending_label}]null[ending]")
     filters.append(
         "[captioned][ending]concat=n=2:v=1:a=0,format=yuv420p[outv]"
     )
@@ -548,7 +609,19 @@ def generate_video(
             create_ass(caption, first_duration, position), encoding="utf-8"
         )
         carousel_overlay = None
+        carousel_subtitle = None
         if carousel_caption is not None:
+            final_duration = probe_duration(ffprobe, final)
+            carousel_subtitle = Path(temp_dir) / "carousel.ass"
+            carousel_subtitle.write_text(
+                create_ass(
+                    carousel_caption,
+                    final_duration,
+                    carousel_position,
+                    CAROUSEL_FONT_SIZE,
+                ),
+                encoding="utf-8",
+            )
             magick = ensure_program("magick")
             arrow = require_file(DEFAULT_CAROUSEL_ARROW, "Carousel arrow")
             carousel_overlay = Path(temp_dir) / "carousel.png"
@@ -569,6 +642,7 @@ def generate_video(
             music,
             music_volume,
             carousel_position,
+            carousel_subtitle,
         )
 
     return selected_index, caption, output

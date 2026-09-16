@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 DEFAULT_TIMEOUT_MS = 30_000
 DEFAULT_OUTPUT_DIRECTORY = Path("outputs")
+SCREENSHOT_DEVICE_SCALE_FACTOR = 2
 DEFAULT_MOCK_NPC_NAME = "ハナ"
 DEFAULT_MOCK_DESCRIPTION = (
     "*ハナはバルコニーの扉のそばで、静かに雨音を聞いている。あなたが近づくと、"
@@ -190,7 +191,7 @@ def capture_screenshot(
             try:
                 context = browser.new_context(
                     viewport={"width": width, "height": height},
-                    device_scale_factor=1,
+                    device_scale_factor=SCREENSHOT_DEVICE_SCALE_FACTOR,
                 )
                 page = context.new_page()
                 page.goto(url, wait_until="load")
@@ -216,6 +217,7 @@ def capture_screenshot(
                     path=str(destination),
                     type="png",
                     full_page=False,
+                    scale="css",
                 )
             finally:
                 if context is not None:

@@ -287,6 +287,7 @@ class ApiTests(unittest.TestCase):
         newer = self.output_directory / "20260915_130000_2.mp4"
         older.write_bytes(b"old")
         newer.write_bytes(b"new video")
+        (self.output_directory / f"{newer.stem}_screenshot.png").write_bytes(b"png")
         (self.output_directory / "ignore.txt").write_text("not video")
         os.utime(older, (1_700_000_000, 1_700_000_000))
         os.utime(newer, (1_800_000_000, 1_800_000_000))
@@ -303,6 +304,7 @@ class ApiTests(unittest.TestCase):
             description="Description",
             message="Message",
             actions=["Action"],
+            language="en",
         )
 
         outputs = [item.model_dump() for item in api.get_output_files()]
@@ -336,6 +338,8 @@ class ApiTests(unittest.TestCase):
             self.assertEqual(api.get_output_files(), [])
 
     def test_lists_screenshot_mock_history(self):
+        (self.output_directory / "video-1.mp4").write_bytes(b"video")
+        (self.output_directory / "video-1_screenshot.png").write_bytes(b"png")
         generation_assets.save_video_screenshot(
             self.generation_database_path,
             "video-1",
@@ -349,18 +353,22 @@ class ApiTests(unittest.TestCase):
             description="Scene",
             message="Message",
             actions=["First", "Second"],
+            language="ja",
         )
 
         history = [item.model_dump() for item in api.get_screenshot_history()]
         self.assertEqual(len(history), 1)
         self.assertEqual(history[0]["video_id"], "video-1")
         self.assertEqual(history[0]["screenshot_id"], "video-1_screenshot")
+        self.assertEqual(history[0]["language"], "ja")
         self.assertEqual(history[0]["actions"], ["First", "Second"])
         self.assertEqual(history[0]["video_url"], "/videos/video-1/download")
         self.assertEqual(
             history[0]["screenshot_url"],
             "/screenshots/video-1_screenshot/download",
         )
+        self.assertEqual(len(api.get_screenshot_history("ja")), 1)
+        self.assertEqual(api.get_screenshot_history("pt"), [])
 
     def test_screenshot_mock_history_is_empty_without_database(self):
         self.assertEqual(api.get_screenshot_history(), [])
@@ -494,6 +502,7 @@ class ApiTests(unittest.TestCase):
             description="Description",
             message="Message",
             actions=["Action"],
+            language="pt",
         )
 
         response = api.get_video_status(generated.stem, self.request)

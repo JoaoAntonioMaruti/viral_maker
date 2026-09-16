@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS video_screenshots (
     description TEXT NOT NULL,
     message TEXT NOT NULL,
     actions_json TEXT NOT NULL,
+    language TEXT,
     created_at TEXT NOT NULL
 )
 """
@@ -32,6 +33,17 @@ CREATE TABLE IF NOT EXISTS video_screenshots (
 
 def _ensure_schema(connection: sqlite3.Connection) -> None:
     connection.execute(_SCHEMA)
+    columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(video_screenshots)")
+    }
+    if "language" not in columns:
+        connection.execute("ALTER TABLE video_screenshots ADD COLUMN language TEXT")
+    connection.execute(
+        "CREATE INDEX IF NOT EXISTS idx_video_screenshots_language "
+        "ON video_screenshots(language)"
+    )
+    connection.commit()
 
 
 def init_db(db_path: Path = DEFAULT_DATABASE_PATH) -> None:
@@ -56,6 +68,7 @@ def save_video_screenshot(
     description: str,
     message: str,
     actions: list[str],
+    language: str,
 ) -> None:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -66,8 +79,8 @@ def save_video_screenshot(
             INSERT INTO video_screenshots (
                 video_id, screenshot_id, npc_id, clothes, client_url,
                 width, height, npc_name, description, message,
-                actions_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                actions_json, language, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(video_id) DO UPDATE SET
                 screenshot_id=excluded.screenshot_id,
                 npc_id=excluded.npc_id,
@@ -79,6 +92,7 @@ def save_video_screenshot(
                 description=excluded.description,
                 message=excluded.message,
                 actions_json=excluded.actions_json,
+                language=excluded.language,
                 created_at=excluded.created_at
             """,
             (
@@ -93,6 +107,7 @@ def save_video_screenshot(
                 description,
                 message,
                 json.dumps(actions, ensure_ascii=False),
+                language,
                 datetime.now(timezone.utc).isoformat(),
             ),
         )
@@ -145,17 +160,20 @@ def fetch_all_by_video_id(db_path: Path) -> dict[str, dict[str, Any]]:
     return {row["video_id"]: _row_to_dict(row) for row in rows}
 
 
-def fetch_screenshot_history(db_path: Path) -> list[dict[str, Any]]:
+def fetch_screenshot_history(
+    db_path: Path, language: str | None = None
+) -> list[dict[str, Any]]:
     path = Path(db_path)
     if not path.exists():
         return []
     with closing(sqlite3.connect(path)) as connection:
         _ensure_schema(connection)
         connection.row_factory = sqlite3.Row
-        rows = connection.execute(
-            """
-            SELECT * FROM video_screenshots
-            ORDER BY created_at DESC, video_id DESC
-            """
-        ).fetchall()
+        query = "SELECT * FROM video_screenshots"
+        parameters: tuple[str, ...] = ()
+        if language is not None:
+            query += " WHERE language = ?"
+            parameters = (language,)
+        query += " ORDER BY created_at DESC, video_id DESC"
+        rows = connection.execute(query, parameters).fetchall()
     return [_row_to_dict(row) for row in rows]

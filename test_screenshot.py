@@ -126,7 +126,7 @@ class ScreenshotTests(unittest.TestCase):
         playwright.chromium.launch.assert_called_once_with(headless=True)
         browser.new_context.assert_called_once_with(
             viewport={"width": 1080, "height": 1920},
-            device_scale_factor=1,
+            device_scale_factor=2,
         )
         page.goto.assert_called_once_with("https://example.com", wait_until="load")
         page.evaluate.assert_any_call(
@@ -137,7 +137,7 @@ class ScreenshotTests(unittest.TestCase):
             "#ready", state="visible", timeout=30_000
         )
         page.screenshot.assert_called_once_with(
-            path=str(output.resolve()), type="png", full_page=False
+            path=str(output.resolve()), type="png", full_page=False, scale="css"
         )
         context.close.assert_called_once_with()
         browser.close.assert_called_once_with()
