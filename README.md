@@ -212,9 +212,14 @@ curl http://localhost:8000/outputs
 ```
 
 Cada item contém `id`, `filename`, `size_bytes`, `created_at`, `url` para
-streaming e `download_url`. Quando o vídeo possui um próximo slide gerado,
-também contém `screenshot_id` e `screenshot_url`; esses campos são `null` para
-vídeos sem carousel.
+streaming, `download_url` e `generation`. O objeto `generation` registra no
+SQLite os vídeos inicial e final, idioma, legenda selecionada, posições,
+carousel e música usados na geração. Quando o vídeo possui um próximo slide,
+também contém `screenshot_id` e `screenshot_url`. Arquivos antigos que não têm
+registro no SQLite retornam `generation: null`.
+
+`GET /videos/{id}` também retorna o objeto `generation` junto ao status e à
+associação opcional com screenshot.
 
 As pastas de mídia também são expostas diretamente, com suporte a streaming:
 

@@ -4,11 +4,15 @@ import sqlite3
 from pathlib import Path
 
 from generation_assets import (
+    delete_video_records,
     fetch_all_by_video_id,
+    fetch_all_generations_by_video_id,
     fetch_by_screenshot_id,
     fetch_by_video_id,
+    fetch_generation_by_video_id,
     fetch_screenshot_history,
     init_db,
+    save_video_generation,
     save_video_screenshot,
 )
 
@@ -36,11 +40,53 @@ class GenerationAssetsTests(unittest.TestCase):
             language=language,
         )
 
+    def save_generation(self, *, carousel: bool = True) -> None:
+        save_video_generation(
+            self.database,
+            "video-1",
+            initial_video=3,
+            initial_video_filename="3.mp4",
+            final_video=2,
+            final_video_filename="2.mp4",
+            language="ja",
+            caption_index=4,
+            caption="Caption",
+            position="center",
+            carousel=carousel,
+            carousel_position="bottom",
+            music=True,
+            music_filename="song.mp3",
+            music_volume=0.25,
+        )
+
     def test_init_db_is_idempotent(self):
         init_db(self.database)
         init_db(self.database)
         self.assertIsNone(fetch_by_video_id(self.database, "missing"))
+        self.assertIsNone(fetch_generation_by_video_id(self.database, "missing"))
         self.assertEqual(fetch_screenshot_history(self.database), [])
+
+    def test_saves_fetches_and_deletes_video_generation(self):
+        self.save_generation()
+        generation = fetch_generation_by_video_id(self.database, "video-1")
+
+        self.assertEqual(generation["initial_video"], 3)
+        self.assertEqual(generation["initial_video_filename"], "3.mp4")
+        self.assertEqual(generation["final_video"], 2)
+        self.assertEqual(generation["final_video_filename"], "2.mp4")
+        self.assertEqual(generation["language"], "ja")
+        self.assertEqual(generation["caption_index"], 4)
+        self.assertTrue(generation["carousel"])
+        self.assertTrue(generation["music"])
+        self.assertEqual(
+            fetch_all_generations_by_video_id(self.database),
+            {"video-1": generation},
+        )
+
+        self.save()
+        delete_video_records(self.database, "video-1")
+        self.assertIsNone(fetch_generation_by_video_id(self.database, "video-1"))
+        self.assertIsNone(fetch_by_video_id(self.database, "video-1"))
 
     def test_saves_and_fetches_association_by_both_ids(self):
         self.save()

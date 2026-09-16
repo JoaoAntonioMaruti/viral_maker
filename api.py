@@ -16,9 +16,13 @@ from pydantic import BaseModel, Field, model_validator
 from audio_metrics import fetch_all_metrics, upsert_metrics
 from download_tiktok_audio import AudioDownloadError, download_audio_with_metadata
 from generation_assets import (
+    delete_video_records,
     fetch_all_by_video_id,
+    fetch_all_generations_by_video_id,
     fetch_by_video_id,
+    fetch_generation_by_video_id,
     fetch_screenshot_history,
+    save_video_generation,
     save_video_screenshot,
 )
 from screenshot import ScreenshotError, capture_screenshot, read_javascript
@@ -123,12 +127,31 @@ class VideoResult(BaseModel):
     screenshot_url: str | None = None
 
 
+class VideoGenerationMetadata(BaseModel):
+    video_id: str
+    initial_video: int
+    initial_video_filename: str
+    final_video: int
+    final_video_filename: str
+    language: Literal["en", "pt", "ja"]
+    caption_index: int
+    caption: str
+    position: Literal["top", "center", "bottom"]
+    carousel: bool
+    carousel_position: Literal["top", "center", "bottom"]
+    music: bool
+    music_filename: str | None
+    music_volume: float
+    created_at: datetime
+
+
 class VideoStatus(BaseModel):
     id: str
     status: Literal["completed"]
     download_url: str
     screenshot_id: str | None = None
     screenshot_url: str | None = None
+    generation: VideoGenerationMetadata | None = None
 
 
 class FinalVideo(BaseModel):
@@ -175,6 +198,7 @@ class OutputFile(BaseModel):
     download_url: str
     screenshot_id: str | None = None
     screenshot_url: str | None = None
+    generation: VideoGenerationMetadata | None = None
 
 
 class ScreenshotMockHistory(BaseModel):
@@ -366,6 +390,7 @@ def get_output_files() -> list[OutputFile]:
     ]
     files.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
     screenshots = fetch_all_by_video_id(GENERATION_DATABASE_PATH)
+    generations = fetch_all_generations_by_video_id(GENERATION_DATABASE_PATH)
 
     outputs = []
     for path in files:
@@ -391,6 +416,7 @@ def get_output_files() -> list[OutputFile]:
                     if screenshot_id is not None
                     else None
                 ),
+                generation=generations.get(path.stem),
             )
         )
     return outputs
@@ -486,13 +512,35 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
                     actions=payload.actions,
                     language=payload.language,
                 )
+            save_video_generation(
+                GENERATION_DATABASE_PATH,
+                created_path.stem,
+                initial_video=payload.video,
+                initial_video_filename=initial_video.name,
+                final_video=payload.final,
+                final_video_filename=final_video.name,
+                language=payload.language,
+                caption_index=selected_index,
+                caption=caption,
+                position=payload.position,
+                carousel=payload.carousel,
+                carousel_position=payload.carousel_position,
+                music=selected_music is not None,
+                music_filename=selected_music.name if selected_music else None,
+                music_volume=payload.music_volume,
+            )
     except ScreenshotError as exc:
         _remove_generated_files(screenshot_output, created_path)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except sqlite3.Error as exc:
         _remove_generated_files(screenshot_output, created_path)
+        if created_path is not None:
+            try:
+                delete_video_records(GENERATION_DATABASE_PATH, created_path.stem)
+            except sqlite3.Error:
+                pass
         raise HTTPException(
-            status_code=500, detail="Could not save video/screenshot association"
+            status_code=500, detail="Could not save video generation metadata"
         ) from exc
     except VideoMakerError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -526,6 +574,9 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
 def get_video_status(video_id: str, request: Request) -> VideoStatus:
     path = video_path(video_id)
     screenshot = fetch_by_video_id(GENERATION_DATABASE_PATH, path.stem)
+    generation = fetch_generation_by_video_id(
+        GENERATION_DATABASE_PATH, path.stem
+    )
     screenshot_id = screenshot["screenshot_id"] if screenshot else None
     return VideoStatus(
         id=path.stem,
@@ -537,6 +588,7 @@ def get_video_status(video_id: str, request: Request) -> VideoStatus:
             if screenshot_id
             else None
         ),
+        generation=generation,
     )
 
 

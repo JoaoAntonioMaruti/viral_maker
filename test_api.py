@@ -306,6 +306,23 @@ class ApiTests(unittest.TestCase):
             actions=["Action"],
             language="en",
         )
+        generation_assets.save_video_generation(
+            self.generation_database_path,
+            newer.stem,
+            initial_video=2,
+            initial_video_filename="2.mp4",
+            final_video=1,
+            final_video_filename="1.mp4",
+            language="en",
+            caption_index=3,
+            caption="Caption",
+            position="top",
+            carousel=True,
+            carousel_position="center",
+            music=False,
+            music_filename=None,
+            music_volume=1.0,
+        )
 
         outputs = [item.model_dump() for item in api.get_output_files()]
         self.assertEqual(
@@ -330,8 +347,12 @@ class ApiTests(unittest.TestCase):
             outputs[0]["screenshot_url"],
             "/screenshots/20260915_130000_2_screenshot/download",
         )
+        self.assertEqual(outputs[0]["generation"]["initial_video"], 2)
+        self.assertEqual(outputs[0]["generation"]["final_video"], 1)
+        self.assertEqual(outputs[0]["generation"]["caption_index"], 3)
         self.assertIsNone(outputs[1]["screenshot_id"])
         self.assertIsNone(outputs[1]["screenshot_url"])
+        self.assertIsNone(outputs[1]["generation"])
 
     def test_output_list_is_empty_when_directory_does_not_exist(self):
         with patch.object(api, "OUTPUT_DIRECTORY", self.output_directory / "missing"):
@@ -470,6 +491,20 @@ class ApiTests(unittest.TestCase):
             association["screenshot_id"], "20260915_120000_1_screenshot"
         )
         self.assertEqual(association["clothes"], "school_uniform")
+        generation_metadata = generation_assets.fetch_generation_by_video_id(
+            self.generation_database_path, "20260915_120000_1"
+        )
+        self.assertEqual(generation_metadata["initial_video"], 3)
+        self.assertEqual(generation_metadata["initial_video_filename"], "3.mp4")
+        self.assertEqual(generation_metadata["final_video"], 2)
+        self.assertEqual(generation_metadata["final_video_filename"], "2.mp4")
+        self.assertEqual(generation_metadata["language"], "pt")
+        self.assertEqual(generation_metadata["caption_index"], 2)
+        self.assertEqual(generation_metadata["caption"], "caption")
+        self.assertEqual(generation_metadata["position"], "center")
+        self.assertTrue(generation_metadata["carousel"])
+        self.assertTrue(generation_metadata["music"])
+        self.assertEqual(generation_metadata["music_filename"], "second.m4a")
 
     def test_status_and_download(self):
         generated = self.output_directory / "20260915_120000_1.mp4"
@@ -504,6 +539,23 @@ class ApiTests(unittest.TestCase):
             actions=["Action"],
             language="pt",
         )
+        generation_assets.save_video_generation(
+            self.generation_database_path,
+            generated.stem,
+            initial_video=1,
+            initial_video_filename="1.mp4",
+            final_video=2,
+            final_video_filename="2.mp4",
+            language="pt",
+            caption_index=1,
+            caption="Caption",
+            position="top",
+            carousel=True,
+            carousel_position="top",
+            music=False,
+            music_filename=None,
+            music_volume=1.0,
+        )
 
         response = api.get_video_status(generated.stem, self.request)
         self.assertEqual(response.screenshot_id, screenshot.stem)
@@ -511,6 +563,8 @@ class ApiTests(unittest.TestCase):
             response.screenshot_url,
             f"http://test/screenshots/{screenshot.stem}/download",
         )
+        self.assertEqual(response.generation.initial_video, 1)
+        self.assertEqual(response.generation.final_video, 2)
         download = api.download_screenshot(screenshot.stem)
         self.assertEqual(Path(download.path), screenshot)
         self.assertEqual(download.media_type, "image/png")
@@ -614,6 +668,12 @@ class ApiTests(unittest.TestCase):
             )
         self.assertIsNone(response.music_filename)
         self.assertIsNone(generate.call_args.kwargs["music_path"])
+        generation = generation_assets.fetch_generation_by_video_id(
+            self.generation_database_path, generated.stem
+        )
+        self.assertIsNotNone(generation)
+        self.assertFalse(generation["carousel"])
+        self.assertFalse(generation["music"])
 
     def test_music_enabled_without_filename_adds_no_music(self):
         generated = self.output_directory / "20260915_120002_1.mp4"
