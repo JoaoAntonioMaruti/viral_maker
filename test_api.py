@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 try:
     import api
     import audio_metrics
+    import generation_assets
     from fastapi import HTTPException
     from pydantic import ValidationError
 except ImportError:
@@ -58,6 +59,14 @@ class ApiTests(unittest.TestCase):
         )
         self.database_path_patch.start()
         self.addCleanup(self.database_path_patch.stop)
+        self.generation_database_path = (
+            Path(self.temp_directory.name) / "generation_assets.db"
+        )
+        self.generation_database_path_patch = patch.object(
+            api, "GENERATION_DATABASE_PATH", self.generation_database_path
+        )
+        self.generation_database_path_patch.start()
+        self.addCleanup(self.generation_database_path_patch.stop)
         self.caption_data = Path(self.temp_directory.name) / "data.json"
         self.caption_data.write_text(
             json.dumps(
@@ -74,8 +83,10 @@ class ApiTests(unittest.TestCase):
         self.caption_data_patch.start()
         self.addCleanup(self.caption_data_patch.stop)
         self.request = Mock()
-        self.request.url_for.side_effect = (
-            lambda _name, video_id: f"http://test/videos/{video_id}/download"
+        self.request.url_for.side_effect = lambda name, **params: (
+            f"http://test/videos/{params['video_id']}/download"
+            if name == "download_video"
+            else f"http://test/screenshots/{params['screenshot_id']}/download"
         )
 
     def test_health(self):
@@ -94,6 +105,8 @@ class ApiTests(unittest.TestCase):
         self.assertIn(("/audios", "POST"), routes)
         self.assertIn(("/data", "GET"), routes)
         self.assertIn(("/outputs", "GET"), routes)
+        self.assertIn(("/screenshots/{screenshot_id}/download", "GET"), routes)
+        self.assertIn(("/screenshots/history", "GET"), routes)
         mount_paths = {
             route.path for route in api.app.routes if route.__class__.__name__ == "Mount"
         }
@@ -277,6 +290,20 @@ class ApiTests(unittest.TestCase):
         (self.output_directory / "ignore.txt").write_text("not video")
         os.utime(older, (1_700_000_000, 1_700_000_000))
         os.utime(newer, (1_800_000_000, 1_800_000_000))
+        generation_assets.save_video_screenshot(
+            self.generation_database_path,
+            newer.stem,
+            f"{newer.stem}_screenshot",
+            npc_id="npc-1",
+            clothes="default",
+            client_url="http://client/play",
+            width=540,
+            height=960,
+            npc_name="Name",
+            description="Description",
+            message="Message",
+            actions=["Action"],
+        )
 
         outputs = [item.model_dump() for item in api.get_output_files()]
         self.assertEqual(
@@ -293,14 +320,58 @@ class ApiTests(unittest.TestCase):
             outputs[0]["download_url"],
             "/videos/20260915_130000_2/download",
         )
+        self.assertEqual(
+            outputs[0]["screenshot_id"],
+            "20260915_130000_2_screenshot",
+        )
+        self.assertEqual(
+            outputs[0]["screenshot_url"],
+            "/screenshots/20260915_130000_2_screenshot/download",
+        )
+        self.assertIsNone(outputs[1]["screenshot_id"])
+        self.assertIsNone(outputs[1]["screenshot_url"])
 
     def test_output_list_is_empty_when_directory_does_not_exist(self):
         with patch.object(api, "OUTPUT_DIRECTORY", self.output_directory / "missing"):
             self.assertEqual(api.get_output_files(), [])
 
+    def test_lists_screenshot_mock_history(self):
+        generation_assets.save_video_screenshot(
+            self.generation_database_path,
+            "video-1",
+            "video-1_screenshot",
+            npc_id="npc-1",
+            clothes="school_uniform",
+            client_url="http://client/play",
+            width=540,
+            height=960,
+            npc_name="ハナ",
+            description="Scene",
+            message="Message",
+            actions=["First", "Second"],
+        )
+
+        history = [item.model_dump() for item in api.get_screenshot_history()]
+        self.assertEqual(len(history), 1)
+        self.assertEqual(history[0]["video_id"], "video-1")
+        self.assertEqual(history[0]["screenshot_id"], "video-1_screenshot")
+        self.assertEqual(history[0]["actions"], ["First", "Second"])
+        self.assertEqual(history[0]["video_url"], "/videos/video-1/download")
+        self.assertEqual(
+            history[0]["screenshot_url"],
+            "/screenshots/video-1_screenshot/download",
+        )
+
+    def test_screenshot_mock_history_is_empty_without_database(self):
+        self.assertEqual(api.get_screenshot_history(), [])
+
     def test_create_video(self):
         generated = self.output_directory / "20260915_120000_1.mp4"
         generated.write_bytes(b"video")
+        generated_screenshot = (
+            self.output_directory / "20260915_120000_1_screenshot.png"
+        )
+        generated_screenshot.write_bytes(b"png")
         with (
             patch.object(api, "default_output_path", return_value=generated),
             patch.object(
@@ -308,6 +379,9 @@ class ApiTests(unittest.TestCase):
                 "generate_video",
                 return_value=(2, "caption", generated),
             ) as generate,
+            patch.object(
+                api, "capture_screenshot", return_value=generated_screenshot
+            ) as capture,
         ):
             response = api.create_video(
                 api.VideoCreate(
@@ -321,6 +395,15 @@ class ApiTests(unittest.TestCase):
                     music=True,
                     music_filename="second.m4a",
                     music_volume=0.15,
+                    client_url="http://client/play",
+                    screenshot_width=540,
+                    screenshot_height=960,
+                    npc_id="npc-123",
+                    clothes="school_uniform",
+                    npc_name="ハナ",
+                    description="Scene",
+                    message="Message",
+                    actions=["First", "Second"],
                 ),
                 self.request,
             )
@@ -334,6 +417,11 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(response.music)
         self.assertEqual(response.music_filename, "second.m4a")
         self.assertEqual(response.music_volume, 0.15)
+        self.assertEqual(response.screenshot_id, "20260915_120000_1_screenshot")
+        self.assertEqual(
+            response.screenshot_url,
+            "http://test/screenshots/20260915_120000_1_screenshot/download",
+        )
         self.assertEqual(
             generate.call_args.kwargs["first_path"],
             (self.video_directory / "3.mp4").resolve(),
@@ -352,6 +440,28 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(generate.call_args.kwargs["music_volume"], 0.15)
         generate.assert_called_once()
+        capture.assert_called_once_with(
+            "http://client/play",
+            540,
+            960,
+            generated_screenshot,
+            npc_id="npc-123",
+            clothes="school_uniform",
+            mock_data={
+                "npcName": "ハナ",
+                "description": "Scene",
+                "message": "Message",
+                "actions": ["First", "Second"],
+            },
+            javascript=api.read_javascript(api.SCREENSHOT_SCRIPT),
+        )
+        association = generation_assets.fetch_by_video_id(
+            self.generation_database_path, "20260915_120000_1"
+        )
+        self.assertEqual(
+            association["screenshot_id"], "20260915_120000_1_screenshot"
+        )
+        self.assertEqual(association["clothes"], "school_uniform")
 
     def test_status_and_download(self):
         generated = self.output_directory / "20260915_120000_1.mp4"
@@ -366,6 +476,77 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(Path(download_response.path), generated)
         self.assertEqual(download_response.media_type, "video/mp4")
 
+    def test_status_and_download_include_associated_screenshot(self):
+        generated = self.output_directory / "20260915_120000_1.mp4"
+        screenshot = self.output_directory / "20260915_120000_1_screenshot.png"
+        generated.write_bytes(b"video")
+        screenshot.write_bytes(b"png")
+        generation_assets.save_video_screenshot(
+            self.generation_database_path,
+            generated.stem,
+            screenshot.stem,
+            npc_id="npc-1",
+            clothes="default",
+            client_url="http://client/play",
+            width=1080,
+            height=1920,
+            npc_name="Name",
+            description="Description",
+            message="Message",
+            actions=["Action"],
+        )
+
+        response = api.get_video_status(generated.stem, self.request)
+        self.assertEqual(response.screenshot_id, screenshot.stem)
+        self.assertEqual(
+            response.screenshot_url,
+            f"http://test/screenshots/{screenshot.stem}/download",
+        )
+        download = api.download_screenshot(screenshot.stem)
+        self.assertEqual(Path(download.path), screenshot)
+        self.assertEqual(download.media_type, "image/png")
+
+    def test_screenshot_failure_removes_carousel_outputs(self):
+        generated = self.output_directory / "20260915_120000_1.mp4"
+        generated.write_bytes(b"video")
+        partial_screenshot = (
+            self.output_directory / "20260915_120000_1_screenshot.png"
+        )
+        partial_screenshot.write_bytes(b"partial")
+        with (
+            patch.object(api, "default_output_path", return_value=generated),
+            patch.object(
+                api, "generate_video", return_value=(1, "caption", generated)
+            ),
+            patch.object(
+                api,
+                "capture_screenshot",
+                side_effect=api.ScreenshotError("capture failed"),
+            ),
+        ):
+            with self.assertRaises(HTTPException) as raised:
+                api.create_video(
+                    api.VideoCreate(
+                        carousel=True,
+                        npc_id="npc-1",
+                        clothes="default",
+                        npc_name="Name",
+                        description="Description",
+                        message="Message",
+                        actions=["Action"],
+                    ),
+                    self.request,
+                )
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertFalse(generated.exists())
+        self.assertFalse(partial_screenshot.exists())
+        self.assertIsNone(
+            generation_assets.fetch_by_video_id(
+                self.generation_database_path, generated.stem
+            )
+        )
+
     def test_missing_video_returns_404(self):
         with self.assertRaises(HTTPException) as raised:
             api.video_path("missing")
@@ -374,6 +555,16 @@ class ApiTests(unittest.TestCase):
     def test_rejects_invalid_payload(self):
         with self.assertRaises(ValidationError):
             api.VideoCreate(language="invalid", position="top")
+
+    def test_carousel_requires_screenshot_fields(self):
+        with self.assertRaisesRegex(ValidationError, "npc_id"):
+            api.VideoCreate(carousel=True)
+
+    def test_screenshot_defaults(self):
+        payload = api.VideoCreate()
+        self.assertEqual(payload.client_url, "http://127.0.0.1:3000/play")
+        self.assertEqual(payload.screenshot_width, 540)
+        self.assertEqual(payload.screenshot_height, 960)
 
     def test_rejects_missing_final_video(self):
         with self.assertRaises(HTTPException) as raised:

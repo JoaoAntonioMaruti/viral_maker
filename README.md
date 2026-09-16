@@ -110,7 +110,7 @@ Crie um vídeo:
 ```bash
 curl -X POST http://localhost:8000/videos/reaction \
   -H 'Content-Type: application/json' \
-  -d '{"language":"pt","index":3,"position":"center","video":2,"final":2,"carousel":true,"carousel_position":"top","music":true,"music_filename":"7559553583222607107.mp3","music_volume":1.0}'
+  -d '{"language":"pt","index":3,"position":"center","video":2,"final":2,"carousel":true,"carousel_position":"top","music":true,"music_filename":"7559553583222607107.mp3","music_volume":1.0,"npc_id":"ed9721fb-fa6c-4e66-85a0-c3dd0ba2a5df","clothes":"default","npc_name":"ハナ","description":"Descrição da cena","message":"Mensagem do diálogo","actions":["Primeira ação","Segunda ação"]}'
 ```
 
 O processamento é síncrono: a resposta é enviada quando o vídeo estiver pronto.
@@ -118,6 +118,33 @@ Ela contém o identificador, a legenda selecionada e a URL para download. Consul
 `GET /videos/{id}` ou baixe com `GET /videos/{id}/download`. Consulte as opções
 de vídeo inicial com `GET /videos`, de vídeo final com `GET /finals` e as músicas
 disponíveis com `GET /audios`.
+
+Quando `carousel` é `true`, a mesma chamada também gera o PNG do próximo slide.
+Nesse caso, `npc_id`, `clothes`, `npc_name`, `description`, `message` e `actions`
+são obrigatórios. A URL do cliente e o tamanho usam estes padrões:
+
+```json
+{
+  "client_url": "http://127.0.0.1:3000/play",
+  "screenshot_width": 540,
+  "screenshot_height": 960
+}
+```
+
+Os três campos podem ser alterados no payload. A resposta inclui
+`screenshot_id` e `screenshot_url`; `GET /videos/{id}` também retorna essa
+associação. O PNG pode ser baixado em `GET /screenshots/{screenshot_id}/download`.
+Vídeo, screenshot e parâmetros de geração são associados no SQLite
+`generation_assets.db`.
+
+Consulte o histórico dos mocks de fala, do mais recente para o mais antigo:
+
+```bash
+curl http://localhost:8000/screenshots/history
+```
+
+Cada item contém os IDs e URLs do vídeo e screenshot, `npc_id`, `clothes`, URL
+do cliente, dimensões, nome, descrição, mensagem, ações e data de criação.
 
 Liste os vídeos iniciais numerados:
 
@@ -177,7 +204,9 @@ curl http://localhost:8000/outputs
 ```
 
 Cada item contém `id`, `filename`, `size_bytes`, `created_at`, `url` para
-streaming e `download_url`.
+streaming e `download_url`. Quando o vídeo possui um próximo slide gerado,
+também contém `screenshot_id` e `screenshot_url`; esses campos são `null` para
+vídeos sem carousel.
 
 As pastas de mídia também são expostas diretamente, com suporte a streaming:
 
