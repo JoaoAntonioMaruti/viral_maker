@@ -30,6 +30,7 @@ from video_maker import (
     VideoMakerError,
     default_output_path,
     generate_video,
+    list_mp4_videos_by_creation,
     list_final_videos,
     load_captions,
     load_carousel_caption,
@@ -273,14 +274,13 @@ def _audio_file_response(path: Path, metrics: dict[str, dict]) -> AudioFile:
 def resolve_initial_video(number: int) -> Path:
     if number < 1:
         raise VideoMakerError("Initial video number must be 1 or greater")
-    candidate = (VIDEO_DIRECTORY / f"{number}.mp4").resolve()
-    if candidate.parent != VIDEO_DIRECTORY.resolve() or not candidate.is_file():
-        available = [str(video.number) for video in get_initial_videos()]
-        choices = ", ".join(available) or "none"
+    videos = list_mp4_videos_by_creation(VIDEO_DIRECTORY)
+    if number > len(videos):
+        choices = ", ".join(str(value) for value in range(1, len(videos) + 1))
         raise VideoMakerError(
-            f"Initial video {number} not found. Available: {choices}"
+            f"Initial video {number} not found. Available: {choices or 'none'}"
         )
-    return candidate
+    return videos[number - 1]
 
 
 @app.get("/health")
@@ -305,14 +305,6 @@ def get_final_videos() -> list[FinalVideo]:
 
 @app.get("/videos", response_model=list[InitialVideo])
 def get_initial_videos() -> list[InitialVideo]:
-    if not VIDEO_DIRECTORY.is_dir():
-        return []
-    videos = [
-        (int(path.stem), path)
-        for path in VIDEO_DIRECTORY.glob("*.mp4")
-        if path.is_file() and path.stem.isdigit() and int(path.stem) >= 1
-    ]
-    videos.sort(key=lambda item: item[0])
     return [
         InitialVideo(
             number=number,
@@ -320,7 +312,9 @@ def get_initial_videos() -> list[InitialVideo]:
             size_bytes=path.stat().st_size,
             url=f"/media/videos/{path.name}",
         )
-        for number, path in videos
+        for number, path in enumerate(
+            list_mp4_videos_by_creation(VIDEO_DIRECTORY), start=1
+        )
     ]
 
 

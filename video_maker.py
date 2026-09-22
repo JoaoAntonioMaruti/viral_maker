@@ -132,17 +132,33 @@ def require_file(path: Path, label: str) -> Path:
     return resolved
 
 
+def _file_creation_time_ns(path: Path) -> int:
+    stat = path.stat()
+    return getattr(stat, "st_birthtime_ns", stat.st_ctime_ns)
+
+
+def list_mp4_videos_by_creation(directory: Path) -> list[Path]:
+    """List direct MP4 children from oldest to newest creation time."""
+    if not directory.is_dir():
+        return []
+    resolved_directory = directory.expanduser().resolve()
+    videos = [
+        resolved_path
+        for path in resolved_directory.iterdir()
+        if path.is_file() and path.suffix.casefold() == ".mp4"
+        for resolved_path in (path.resolve(),)
+        if resolved_path.parent == resolved_directory
+    ]
+    videos.sort(key=lambda path: (_file_creation_time_ns(path), path.name.casefold()))
+    return videos
+
+
 def list_final_videos(directory: Path) -> list[tuple[int, Path]]:
     resolved_directory = directory.expanduser().resolve()
     if not resolved_directory.is_dir():
         raise VideoMakerError(f"Final video directory not found: {directory}")
 
-    videos = []
-    for path in resolved_directory.glob("*.mp4"):
-        if path.stem.isdigit() and int(path.stem) >= 1:
-            videos.append((int(path.stem), path.resolve()))
-    videos.sort(key=lambda item: item[0])
-    return videos
+    return list(enumerate(list_mp4_videos_by_creation(resolved_directory), start=1))
 
 
 def resolve_final_video(directory: Path, number: int) -> Path:

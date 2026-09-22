@@ -97,20 +97,30 @@ class SubtitleTests(unittest.TestCase):
 
 
 class FinalVideoTests(unittest.TestCase):
-    def test_lists_and_sorts_numbered_final_videos(self):
+    @patch(
+        "video_maker._file_creation_time_ns",
+        side_effect=lambda path: {"first clip.mp4": 1, "10.mp4": 2}[path.name],
+    )
+    def test_lists_any_mp4_and_assigns_numbers_by_creation_order(self, _creation_time):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            (root / "first clip.mp4").touch()
             (root / "10.mp4").touch()
-            (root / "2.mp4").touch()
-            (root / "other.mp4").touch()
+            (root / "ignore.txt").touch()
             self.assertEqual(
-                [number for number, _path in list_final_videos(root)], [2, 10]
+                [(number, path.name) for number, path in list_final_videos(root)],
+                [(1, "first clip.mp4"), (2, "10.mp4")],
             )
 
-    def test_resolves_selected_final_video(self):
+    @patch(
+        "video_maker._file_creation_time_ns",
+        side_effect=lambda path: {"first.mp4": 1, "any-name.mp4": 2}[path.name],
+    )
+    def test_resolves_selected_final_video(self, _creation_time):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            expected = root / "2.mp4"
+            (root / "first.mp4").touch()
+            expected = root / "any-name.mp4"
             expected.touch()
             self.assertEqual(resolve_final_video(root, 2), expected.resolve())
 

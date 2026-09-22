@@ -136,7 +136,7 @@ class ApiTests(unittest.TestCase):
             ],
         )
 
-    def test_lists_numbered_initial_videos(self):
+    def test_lists_initial_videos_and_assigns_numbers_by_creation_order(self):
         self.assertEqual(
             [video.model_dump() for video in api.get_initial_videos()],
             [
@@ -147,13 +147,23 @@ class ApiTests(unittest.TestCase):
                     "url": "/media/videos/1.mp4",
                 },
                 {
-                    "number": 3,
+                    "number": 2,
                     "filename": "3.mp4",
                     "size_bytes": 11,
                     "url": "/media/videos/3.mp4",
                 },
             ],
         )
+
+    def test_lists_initial_video_with_non_numeric_filename(self):
+        path = self.video_directory / "custom name.mp4"
+        path.write_bytes(b"custom")
+
+        videos = api.get_initial_videos()
+
+        self.assertEqual(videos[-1].number, 3)
+        self.assertEqual(videos[-1].filename, "custom name.mp4")
+        self.assertEqual(api.resolve_initial_video(3), path.resolve())
 
     def test_initial_video_list_is_empty_when_directory_does_not_exist(self):
         with patch.object(api, "VIDEO_DIRECTORY", self.video_directory / "missing"):
@@ -417,7 +427,7 @@ class ApiTests(unittest.TestCase):
                     language="pt",
                     index=2,
                     position="center",
-                    video=3,
+                    video=2,
                     final=2,
                     carousel=True,
                     carousel_position="bottom",
@@ -439,7 +449,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.id, "20260915_120000_1")
         self.assertEqual(response.caption, "caption")
-        self.assertEqual(response.video, 3)
+        self.assertEqual(response.video, 2)
         self.assertEqual(response.final, 2)
         self.assertTrue(response.carousel)
         self.assertEqual(response.carousel_position, "bottom")
@@ -494,7 +504,7 @@ class ApiTests(unittest.TestCase):
         generation_metadata = generation_assets.fetch_generation_by_video_id(
             self.generation_database_path, "20260915_120000_1"
         )
-        self.assertEqual(generation_metadata["initial_video"], 3)
+        self.assertEqual(generation_metadata["initial_video"], 2)
         self.assertEqual(generation_metadata["initial_video_filename"], "3.mp4")
         self.assertEqual(generation_metadata["final_video"], 2)
         self.assertEqual(generation_metadata["final_video_filename"], "2.mp4")
@@ -636,9 +646,9 @@ class ApiTests(unittest.TestCase):
 
     def test_rejects_missing_initial_video(self):
         with self.assertRaises(HTTPException) as raised:
-            api.create_video(api.VideoCreate(video=2), self.request)
+            api.create_video(api.VideoCreate(video=3), self.request)
         self.assertEqual(raised.exception.status_code, 400)
-        self.assertIn("Available: 1, 3", raised.exception.detail)
+        self.assertIn("Available: 1, 2", raised.exception.detail)
 
     def test_rejects_missing_audio_filename(self):
         with self.assertRaises(HTTPException) as raised:

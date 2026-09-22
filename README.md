@@ -73,9 +73,10 @@ sorteada. O idioma padrão é `en` e a posição padrão é `top`. Use `--output
 para escolher outro caminho. Para substituir uma saída existente, passe
 `--overwrite`.
 
-Os vídeos finais ficam em `videos/final_videos` e usam nomes numéricos como
-`1.mp4` e `2.mp4`. Selecione com `--final 2`; sem esse argumento, será usado o
-final `1.mp4`.
+Os vídeos finais ficam em `videos/final_videos` e podem usar qualquer nome com
+extensão `.mp4`. Eles são numerados pela ordem de criação, do mais antigo ao
+mais novo. Selecione a posição com `--final 2`; sem esse argumento, será usado o
+primeiro vídeo.
 
 ## API HTTP
 
@@ -154,16 +155,17 @@ Cada item contém os IDs e URLs do vídeo e screenshot, idioma, `npc_id`,
 criação. Registros antigos, criados antes desse campo, retornam `language` como
 `null`.
 
-Liste os vídeos iniciais numerados:
+Liste os vídeos iniciais:
 
 ```bash
 curl http://localhost:8000/videos
 ```
 
 Cada item contém `number`, `filename`, `size_bytes` e a `url` de streaming. A
-listagem considera apenas arquivos como `videos/1.mp4`, sem incluir a subpasta
-`videos/final_videos`. Passe o `number` escolhido no campo `video` de
-`POST /videos/reaction`; se omitido, o vídeo inicial 1 será usado.
+listagem considera qualquer arquivo `.mp4` diretamente em `videos`, sem incluir
+a subpasta `videos/final_videos`, e o numera pela ordem de criação, do mais antigo
+ao mais novo. Passe o `number` escolhido no campo `video` de
+`POST /videos/reaction`; se omitido, o primeiro vídeo será usado.
 
 Exemplo da listagem de músicas:
 
