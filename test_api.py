@@ -119,6 +119,12 @@ class ApiTests(unittest.TestCase):
         self.assertIn(("/videos/chat-video/{job_id}", "GET"), routes)
         self.assertIn(("/videos/chat-video/{job_id}/download", "GET"), routes)
         self.assertIn(("/videos/chat-video/{job_id}/stop", "POST"), routes)
+        self.assertIn(("/videos/tags", "GET"), routes)
+        self.assertIn(("/videos/{video_id}/tags", "GET"), routes)
+        self.assertIn(("/videos/{video_id}/tags", "POST"), routes)
+        self.assertIn(("/videos/{video_id}/tags/{tag}", "DELETE"), routes)
+        self.assertIn(("/videos/{video_id}/feedback", "PUT"), routes)
+        self.assertIn(("/videos/{video_id}/metadata", "GET"), routes)
         mount_paths = {
             route.path for route in api.app.routes if route.__class__.__name__ == "Mount"
         }
@@ -163,15 +169,103 @@ class ApiTests(unittest.TestCase):
         fetched = api.get_chat_video_job(created.id, self._chat_request())
 
         self.assertEqual(created.status, "queued")
+        self.assertEqual(created.type, "chat-video")
         self.assertFalse(created.headed)
         self.assertFalse(created.stop_requested)
         self.assertFalse(created.stopped_early)
+        self.assertEqual(created.progress, 0)
+        self.assertEqual(created.progress_stage, "queued")
         self.assertEqual(fetched.id, created.id)
         self.assertIsNone(created.download_url)
         stored = api.chat_video_jobs.fetch(
             self.chat_video_database_path, created.id
         )
         self.assertEqual(json.loads(stored["schema_json"])["npc"]["name"], "ハナ")
+        metadata = api.video_metadata.fetch(
+            self.generation_database_path, created.id
+        )
+        self.assertEqual(metadata["type"], "chat-video")
+        self.assertEqual(metadata["request_body"]["npc"]["name"], "ハナ")
+
+    def test_adds_unique_tags_and_lists_them_for_all_video_types(self):
+        reaction = self.output_directory / "reaction-1.mp4"
+        chat = self.output_directory / "chat-example.mp4"
+        reaction.write_bytes(b"reaction")
+        chat.write_bytes(b"chat")
+
+        first = api.add_video_tags(
+            reaction.stem,
+            api.VideoTagsCreate(tags=["Anime", "anime", " Viral "]),
+        )
+        second = api.add_video_tags(
+            reaction.stem,
+            api.VideoTagsCreate(tags=["ANIME", "Comedy"]),
+        )
+        chat_tags = api.add_video_tags(
+            chat.stem,
+            api.VideoTagsCreate(tags=["Dialogue"]),
+        )
+        listed = {item.video_id: item for item in api.list_video_tags()}
+
+        self.assertEqual(first.tags, ["Anime", "Viral"])
+        self.assertEqual(second.tags, ["Anime", "Comedy", "Viral"])
+        self.assertEqual(second.type, "ugc-reaction")
+        self.assertEqual(chat_tags.type, "chat-video")
+        self.assertEqual(listed[reaction.stem].tags, second.tags)
+        self.assertEqual(listed[chat.stem].tags, ["Dialogue"])
+
+    def test_removes_tag_case_insensitively_and_is_idempotent(self):
+        video = self.output_directory / "reaction-1.mp4"
+        video.write_bytes(b"reaction")
+        api.add_video_tags(
+            video.stem,
+            api.VideoTagsCreate(tags=["Anime", "Dialogue"]),
+        )
+
+        removed = api.remove_video_tag(video.stem, "anime")
+        repeated = api.remove_video_tag(video.stem, "ANIME")
+
+        self.assertEqual(removed.tags, ["Dialogue"])
+        self.assertEqual(repeated.tags, ["Dialogue"])
+
+    def test_feedback_is_replaceable_and_independent_of_video_type(self):
+        for video_id in ("reaction-1", "chat-example"):
+            (self.output_directory / f"{video_id}.mp4").write_bytes(b"video")
+
+        reaction = api.update_video_feedback(
+            "reaction-1",
+            api.VideoFeedbackUpdate(value="thumbsup"),
+        )
+        chat = api.update_video_feedback(
+            "chat-example",
+            api.VideoFeedbackUpdate(value="thumbsdown"),
+        )
+        cleared = api.update_video_feedback(
+            "reaction-1",
+            api.VideoFeedbackUpdate(value=None),
+        )
+
+        self.assertEqual(reaction.type, "ugc-reaction")
+        self.assertEqual(reaction.value, "thumbsup")
+        self.assertEqual(chat.type, "chat-video")
+        self.assertEqual(chat.value, "thumbsdown")
+        self.assertIsNone(cleared.value)
+
+    def test_returns_reproducible_video_metadata(self):
+        path = self.output_directory / "chat-example.mp4"
+        path.write_bytes(b"video")
+        body = self._chat_schema()
+        api.video_metadata.upsert_video(
+            self.generation_database_path,
+            path.stem,
+            "chat-video",
+            request_body=body,
+        )
+
+        metadata = api.get_video_metadata(path.stem)
+
+        self.assertEqual(metadata.type, "chat-video")
+        self.assertEqual(metadata.request_body, body)
 
     def test_creates_headed_chat_video_job_for_debugging(self):
         payload = api.ChatVideoCreate.model_validate(self._chat_schema())
@@ -253,6 +347,7 @@ class ApiTests(unittest.TestCase):
 
         self.assertEqual(response.status, "processing")
         self.assertTrue(response.stop_requested)
+        self.assertEqual(response.progress_stage, "stopping")
 
     def test_stop_rejects_queued_chat_video(self):
         created = api.create_chat_video(
@@ -484,6 +579,9 @@ class ApiTests(unittest.TestCase):
             ["20260915_130000_2.mp4", "20260915_120000_1.mp4"],
         )
         self.assertEqual(outputs[0]["id"], "20260915_130000_2")
+        self.assertEqual(outputs[0]["type"], "ugc-reaction")
+        self.assertEqual(outputs[0]["tags"], [])
+        self.assertIsNone(outputs[0]["feedback"])
         self.assertEqual(outputs[0]["size_bytes"], 9)
         self.assertEqual(
             outputs[0]["url"],
@@ -592,6 +690,7 @@ class ApiTests(unittest.TestCase):
             )
 
         self.assertEqual(response.id, "20260915_120000_1")
+        self.assertEqual(response.type, "ugc-reaction")
         self.assertEqual(response.caption, "caption")
         self.assertEqual(response.video, 2)
         self.assertEqual(response.final, 2)
@@ -659,6 +758,11 @@ class ApiTests(unittest.TestCase):
         self.assertTrue(generation_metadata["carousel"])
         self.assertTrue(generation_metadata["music"])
         self.assertEqual(generation_metadata["music_filename"], "second.m4a")
+        metadata = api.video_metadata.fetch(
+            self.generation_database_path, response.id
+        )
+        self.assertEqual(metadata["type"], "ugc-reaction")
+        self.assertEqual(metadata["request_body"]["language"], "pt")
 
     def test_status_and_download(self):
         generated = self.output_directory / "20260915_120000_1.mp4"

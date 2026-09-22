@@ -24,11 +24,15 @@ class ChatVideoJobsTests(unittest.TestCase):
         self.assertEqual(created["headed"], 1)
         self.assertEqual(created["stop_requested"], 0)
         self.assertEqual(created["stopped_early"], 0)
+        self.assertEqual(created["progress"], 0)
+        self.assertEqual(created["progress_stage"], "queued")
 
         claimed = chat_video_jobs.claim_next(self.database)
         self.assertEqual(claimed["id"], "job-1")
         self.assertEqual(claimed["status"], "processing")
         self.assertEqual(claimed["attempts"], 1)
+        self.assertEqual(claimed["progress"], 5)
+        self.assertEqual(claimed["progress_stage"], "preparing")
         self.assertIsNone(chat_video_jobs.claim_next(self.database))
 
         chat_video_jobs.complete(
@@ -43,6 +47,18 @@ class ChatVideoJobsTests(unittest.TestCase):
         self.assertEqual(completed["status"], "completed")
         self.assertEqual(completed["output_filename"], "job-1.mp4")
         self.assertEqual(completed["duration_ms"], 1234)
+        self.assertEqual(completed["progress"], 100)
+        self.assertEqual(completed["progress_stage"], "completed")
+
+    def test_updates_processing_progress_without_reaching_one_hundred(self):
+        chat_video_jobs.create(self.database, "job-1", "{}")
+        chat_video_jobs.claim_next(self.database)
+
+        chat_video_jobs.update_progress(self.database, "job-1", 150, "recording")
+
+        job = chat_video_jobs.fetch(self.database, "job-1")
+        self.assertEqual(job["progress"], 99)
+        self.assertEqual(job["progress_stage"], "recording")
 
     def test_processing_job_can_request_stop(self):
         chat_video_jobs.create(self.database, "job-1", "{}")
@@ -106,6 +122,8 @@ class ChatVideoJobsTests(unittest.TestCase):
         self.assertEqual(migrated["headed"], 0)
         self.assertEqual(migrated["stop_requested"], 0)
         self.assertEqual(migrated["stopped_early"], 0)
+        self.assertEqual(migrated["progress"], 0)
+        self.assertEqual(migrated["progress_stage"], "queued")
 
 
 if __name__ == "__main__":

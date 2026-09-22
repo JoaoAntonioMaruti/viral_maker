@@ -14,6 +14,7 @@ from chat_video import (
     ChatVideoResult,
     ChatVideoWorker,
     _event_duration_ms,
+    _estimate_recording_duration_ms,
     _recording_duration_ms,
     _sanitize_job_error,
     build_director_url,
@@ -68,6 +69,24 @@ class ChatVideoTests(unittest.TestCase):
             1234,
         )
 
+    def test_estimates_progress_duration_from_conversation_events(self):
+        estimated = _estimate_recording_duration_ms(
+            {
+                "events": [
+                    {
+                        "delayMs": 300,
+                        "message": "1234567890",
+                        "reveal": {
+                            "loadingMs": 500,
+                            "charactersPerSecond": 10,
+                        },
+                        "holdMs": 1200,
+                    }
+                ]
+            }
+        )
+        self.assertEqual(estimated, 3000)
+
     def test_recording_starts_when_play_event_is_emitted(self):
         self.assertEqual(
             _recording_duration_ms(
@@ -101,6 +120,7 @@ class ChatVideoTests(unittest.TestCase):
                 self.assertEqual(kwargs["injection_script"], script)
                 self.assertFalse(kwargs["headed"])
                 self.assertFalse(kwargs["should_stop"]())
+                kwargs["on_progress"](75, "recording")
                 output.parent.mkdir(parents=True, exist_ok=True)
                 output.write_bytes(b"video")
                 return ChatVideoResult(

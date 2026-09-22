@@ -163,6 +163,33 @@ def _recording_duration_ms(
     return _event_duration_ms(started, finished)
 
 
+def _estimate_recording_duration_ms(schema: dict[str, Any]) -> int:
+    def positive_number(value: Any) -> float:
+        return float(value) if isinstance(value, (int, float)) and value > 0 else 0
+
+    total = 0.0
+    for event in schema.get("events", []):
+        if not isinstance(event, dict):
+            continue
+        total += positive_number(event.get("delayMs"))
+        reveal = event.get("reveal") or {}
+        if isinstance(reveal, dict):
+            total += positive_number(reveal.get("loadingMs"))
+            characters_per_second = reveal.get("charactersPerSecond")
+            message = event.get("message")
+            if (
+                isinstance(characters_per_second, (int, float))
+                and characters_per_second > 0
+                and isinstance(message, str)
+            ):
+                total += len(message) / characters_per_second * 1000
+        audio = event.get("audio") or {}
+        if isinstance(audio, dict) and isinstance(audio.get("text"), str):
+            total += len(audio["text"]) / 12 * 1000
+        total += positive_number(event.get("holdMs"))
+    return max(1000, round(total))
+
+
 def _mux_recording(
     ffmpeg: str,
     raw_video: Path,
@@ -281,6 +308,7 @@ def capture_chat_video(
     client_url: str = "http://localhost:3000/play",
     headed: bool = False,
     should_stop: Callable[[], bool] | None = None,
+    on_progress: Callable[[int, str], None] | None = None,
 ) -> ChatVideoResult:
     """Record one conversation and return its director metadata."""
     try:
@@ -290,6 +318,13 @@ def capture_chat_video(
         raise ChatVideoError("Chat video schema has no valid npc.id") from exc
     if not isinstance(npc_id, str) or not npc_id.strip():
         raise ChatVideoError("Chat video schema has no valid npc.id")
+    estimated_duration_ms = _estimate_recording_duration_ms(schema)
+
+    def report_progress(progress: int, stage: str) -> None:
+        if on_progress is not None:
+            on_progress(progress, stage)
+
+    report_progress(8, "preparing")
 
     ffmpeg = _require_program("ffmpeg")
     ffprobe = _require_program("ffprobe")
@@ -335,6 +370,7 @@ def capture_chat_video(
                     ignore_default_args=["--mute-audio"],
                     env=browser_environment,
                 )
+                report_progress(12, "opening-browser")
                 context = browser.new_context(
                     viewport={"width": CAPTURE_WIDTH, "height": CAPTURE_HEIGHT},
                     screen={"width": CAPTURE_WIDTH, "height": CAPTURE_HEIGHT},
@@ -347,11 +383,13 @@ def capture_chat_video(
                     wait_until="load",
                     timeout=CHAT_START_TIMEOUT_MS,
                 )
+                report_progress(20, "loading-page")
                 page.evaluate(
                     "config => { window.__chatVideoConfig = config; }",
                     {"npcId": npc_id},
                 )
                 page.evaluate("window.__prepareChatVideo()")
+                report_progress(30, "dialog-ready")
 
                 audio_started_at = time.time() * 1000
                 audio_process = _start_audio_capture(ffmpeg, sink_name, raw_audio)
@@ -373,7 +411,9 @@ def capture_chat_video(
                 execution_id = started.get("executionId")
                 if not isinstance(execution_id, str) or not execution_id:
                     raise ChatVideoError("Chat started event has no executionId")
+                report_progress(40, "recording")
                 finish_deadline = time.monotonic() + CHAT_FINISH_TIMEOUT_MS / 1000
+                last_reported_progress = 40
                 while time.monotonic() < finish_deadline:
                     finished = page.evaluate(
                         "executionId => window.__chatVideoCapture.finished.find("
@@ -389,7 +429,15 @@ def capture_chat_video(
                         and should_stop()
                     ):
                         stopped_at = time.time() * 1000
+                        report_progress(max(last_reported_progress, 85), "stopping")
                         break
+                    estimated_progress = min(
+                        85,
+                        40 + round(45 * elapsed_ms / estimated_duration_ms),
+                    )
+                    if estimated_progress > last_reported_progress:
+                        last_reported_progress = estimated_progress
+                        report_progress(estimated_progress, "recording")
                     page.wait_for_timeout(STOP_POLL_INTERVAL_MS)
                 else:
                     raise ChatVideoError(
@@ -397,6 +445,7 @@ def capture_chat_video(
                         f"{CHAT_FINISH_TIMEOUT_MS}ms"
                     )
                 page.screencast.stop()
+                report_progress(88, "finalizing")
                 screencast_started = False
                 _stop_audio_capture(audio_process)
                 audio_process = None
@@ -460,6 +509,7 @@ def capture_chat_video(
             ),
             duration_ms=duration_ms,
         )
+        report_progress(97, "validating")
         try:
             _validate_output(ffprobe, destination)
         except Exception:
@@ -528,6 +578,14 @@ class ChatVideoWorker:
                         headed=bool(job["headed"]),
                         should_stop=lambda: chat_video_jobs.is_stop_requested(
                             self.database_path, job["id"]
+                        ),
+                        on_progress=lambda progress, stage: (
+                            chat_video_jobs.update_progress(
+                                self.database_path,
+                                job["id"],
+                                progress,
+                                stage,
+                            )
                         ),
                     )
                 chat_video_jobs.complete(

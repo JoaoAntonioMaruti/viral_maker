@@ -51,6 +51,8 @@ def initialize(path: Path) -> None:
                 headed INTEGER NOT NULL DEFAULT 0,
                 stop_requested INTEGER NOT NULL DEFAULT 0,
                 stopped_early INTEGER NOT NULL DEFAULT 0,
+                progress INTEGER NOT NULL DEFAULT 0,
+                progress_stage TEXT NOT NULL DEFAULT 'queued',
                 attempts INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 started_at TEXT,
@@ -81,6 +83,20 @@ def initialize(path: Path) -> None:
                 """
                 ALTER TABLE chat_video_jobs
                 ADD COLUMN stopped_early INTEGER NOT NULL DEFAULT 0
+                """
+            )
+        if "progress" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE chat_video_jobs
+                ADD COLUMN progress INTEGER NOT NULL DEFAULT 0
+                """
+            )
+        if "progress_stage" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE chat_video_jobs
+                ADD COLUMN progress_stage TEXT NOT NULL DEFAULT 'queued'
                 """
             )
 
@@ -128,7 +144,8 @@ def recover_interrupted(path: Path) -> int:
             SET status = 'queued', started_at = NULL, finished_at = NULL,
                 output_filename = NULL, error = NULL, execution_id = NULL,
                 conversation_id = NULL, duration_ms = NULL,
-                stop_requested = 0, stopped_early = 0
+                stop_requested = 0, stopped_early = 0,
+                progress = 0, progress_stage = 'queued'
             WHERE status = 'processing'
             """
         )
@@ -159,6 +176,7 @@ def claim_next(path: Path) -> dict[str, Any] | None:
             UPDATE chat_video_jobs
             SET status = 'processing', started_at = ?, finished_at = NULL,
                 error = NULL, stop_requested = 0, stopped_early = 0,
+                progress = 5, progress_stage = 'preparing',
                 attempts = attempts + 1
             WHERE id = ? AND status = 'queued'
             """,
@@ -196,7 +214,8 @@ def complete(
             UPDATE chat_video_jobs
             SET status = 'completed', output_filename = ?, error = NULL,
                 execution_id = ?, conversation_id = ?, duration_ms = ?,
-                stopped_early = ?, finished_at = ?
+                stopped_early = ?, progress = 100,
+                progress_stage = 'completed', finished_at = ?
             WHERE id = ?
             """,
             (
@@ -218,7 +237,7 @@ def fail(path: Path, job_id: str, error: str) -> None:
             """
             UPDATE chat_video_jobs
             SET status = 'failed', output_filename = NULL, error = ?,
-                finished_at = ?
+                progress_stage = 'failed', finished_at = ?
             WHERE id = ?
             """,
             (error[:2000], _utc_now(), job_id),
@@ -231,7 +250,7 @@ def request_stop(path: Path, job_id: str) -> dict[str, Any] | None:
         connection.execute(
             """
             UPDATE chat_video_jobs
-            SET stop_requested = 1
+            SET stop_requested = 1, progress_stage = 'stopping'
             WHERE id = ? AND status = 'processing'
             """,
             (job_id,),
@@ -249,3 +268,21 @@ def is_stop_requested(path: Path, job_id: str) -> bool:
             (job_id,),
         ).fetchone()
     return bool(row["stop_requested"]) if row is not None else False
+
+
+def update_progress(
+    path: Path,
+    job_id: str,
+    progress: int,
+    stage: str,
+) -> None:
+    bounded = max(0, min(99, progress))
+    with _open(path) as connection:
+        connection.execute(
+            """
+            UPDATE chat_video_jobs
+            SET progress = ?, progress_stage = ?
+            WHERE id = ? AND status = 'processing'
+            """,
+            (bounded, stage, job_id),
+        )

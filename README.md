@@ -143,6 +143,13 @@ beginning. The result is a 1080x1920 H.264 MP4 with the Chromium tab's real
 audio encoded as AAC. Chromium renders at 540x960 and FFmpeg scales the final
 file to 1080x1920.
 
+Every job status response also includes `progress` (`0` through `100`) and
+`progress_stage`. Recording progress is estimated from the conversation's
+delays, reveal speed, audio text, and hold times. It remains below `100` until
+the MP4 has been composed and validated. Typical stages are `queued`,
+`preparing`, `opening-browser`, `loading-page`, `dialog-ready`, `recording`,
+`stopping`, `finalizing`, `validating`, `completed`, and `failed`.
+
 To finish an active recording early and save everything captured so far, send:
 
 ```bash
@@ -153,6 +160,49 @@ The request returns HTTP 202 with `stop_requested: true`. Poll the regular
 status URL until it becomes `completed`; `stopped_early` will then be `true`
 and the normal `download_url` will be available. A queued job cannot be stopped
 because it has no recorded media yet.
+
+### Video metadata, tags, and feedback
+
+Every generated video has a `type`: `ugc-reaction` for the original generator
+or `chat-video` for director recordings. The request body needed to reproduce a
+new video is stored with its metadata and can be read with:
+
+```bash
+curl http://localhost:8000/videos/VIDEO_ID/metadata
+```
+
+Add one or more tags with:
+
+```bash
+curl -X POST http://localhost:8000/videos/VIDEO_ID/tags \
+  -H 'Content-Type: application/json' \
+  -d '{"tags":["anime","dialogue"]}'
+```
+
+Tags are trimmed and unique per video, case-insensitively. Repeating a tag is
+idempotent. Remove one tag (also idempotently and case-insensitively) with:
+
+```bash
+curl -X DELETE http://localhost:8000/videos/VIDEO_ID/tags/TAG
+```
+
+URL-encode tags containing spaces or special characters. Read one video's tags
+or list tags for every generated video with:
+
+```text
+GET /videos/{video_id}/tags
+GET /videos/tags
+```
+
+Set, replace, or clear the video's feedback independently of its type:
+
+```bash
+curl -X PUT http://localhost:8000/videos/VIDEO_ID/feedback \
+  -H 'Content-Type: application/json' \
+  -d '{"value":"thumbsup"}'
+```
+
+Valid values are `thumbsup`, `thumbsdown`, and `null`.
 
 Create a video:
 

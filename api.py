@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 import chat_video_jobs
+import video_metadata
 from audio_metrics import fetch_all_metrics, upsert_metrics
 from chat_video import ChatVideoWorker
 from download_tiktok_audio import AudioDownloadError, download_audio_with_metadata
@@ -139,6 +140,7 @@ class VideoCreate(BaseModel):
 
 class VideoResult(BaseModel):
     id: str
+    type: Literal["ugc-reaction"] = "ugc-reaction"
     status: Literal["completed"]
     language: Literal["en", "pt", "ja"]
     caption_index: int
@@ -176,8 +178,11 @@ class VideoGenerationMetadata(BaseModel):
 
 class VideoStatus(BaseModel):
     id: str
+    type: Literal["ugc-reaction", "chat-video"]
     status: Literal["completed"]
     download_url: str
+    tags: list[str] = Field(default_factory=list)
+    feedback: Literal["thumbsup", "thumbsdown"] | None = None
     screenshot_id: str | None = None
     screenshot_url: str | None = None
     generation: VideoGenerationMetadata | None = None
@@ -220,11 +225,14 @@ class CaptionData(BaseModel):
 
 class OutputFile(BaseModel):
     id: str
+    type: Literal["ugc-reaction", "chat-video"]
     filename: str
     size_bytes: int
     created_at: datetime
     url: str
     download_url: str
+    tags: list[str] = Field(default_factory=list)
+    feedback: Literal["thumbsup", "thumbsdown"] | None = None
     screenshot_id: str | None = None
     screenshot_url: str | None = None
     generation: VideoGenerationMetadata | None = None
@@ -280,10 +288,13 @@ class ChatVideoCreate(BaseModel):
 
 class ChatVideoJob(BaseModel):
     id: str
+    type: Literal["chat-video"] = "chat-video"
     status: Literal["queued", "processing", "completed", "failed"]
     headed: bool
     stop_requested: bool
     stopped_early: bool
+    progress: int = Field(ge=0, le=100)
+    progress_stage: str
     status_url: str
     download_url: str | None
     execution_id: str | None = None
@@ -293,6 +304,53 @@ class ChatVideoJob(BaseModel):
     created_at: datetime
     started_at: datetime | None = None
     finished_at: datetime | None = None
+
+
+class VideoTagsCreate(BaseModel):
+    tags: list[str] = Field(min_length=1, max_length=20)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, tags: list[str]) -> list[str]:
+        normalized = []
+        seen = set()
+        for tag in tags:
+            cleaned = tag.strip()
+            if not cleaned:
+                raise ValueError("tags must not be empty")
+            if len(cleaned) > 50:
+                raise ValueError("tags must have at most 50 characters")
+            key = cleaned.casefold()
+            if key not in seen:
+                normalized.append(cleaned)
+                seen.add(key)
+        return normalized
+
+
+class VideoTags(BaseModel):
+    video_id: str
+    type: Literal["ugc-reaction", "chat-video"]
+    tags: list[str]
+
+
+class VideoFeedbackUpdate(BaseModel):
+    value: Literal["thumbsup", "thumbsdown"] | None
+
+
+class VideoFeedback(BaseModel):
+    video_id: str
+    type: Literal["ugc-reaction", "chat-video"]
+    value: Literal["thumbsup", "thumbsdown"] | None
+
+
+class VideoMetadata(BaseModel):
+    video_id: str
+    type: Literal["ugc-reaction", "chat-video"]
+    request_body: dict[str, Any] | None
+    tags: list[str]
+    feedback: Literal["thumbsup", "thumbsdown"] | None
+    created_at: datetime
+    updated_at: datetime
 
 
 def video_path(video_id: str) -> Path:
@@ -324,6 +382,8 @@ def _chat_video_job_response(
         headed=bool(job["headed"]),
         stop_requested=bool(job["stop_requested"]),
         stopped_early=bool(job["stopped_early"]),
+        progress=job["progress"],
+        progress_stage=job["progress_stage"],
         status_url=str(request.url_for("get_chat_video_job", job_id=job_id)),
         download_url=(
             str(request.url_for("download_chat_video", job_id=job_id))
@@ -348,6 +408,11 @@ def _chat_video_output_path(job: dict[str, Any]) -> Path:
     if candidate.parent != OUTPUT_DIRECTORY.resolve() or not candidate.is_file():
         raise HTTPException(status_code=404, detail="Chat video not found")
     return candidate
+
+
+def _metadata_for_existing_video(video_id: str) -> dict[str, Any]:
+    video_path(video_id)
+    return video_metadata.ensure_video(GENERATION_DATABASE_PATH, video_id)
 
 
 def _remove_generated_files(*paths: Path | None) -> None:
@@ -497,6 +562,7 @@ def get_output_files() -> list[OutputFile]:
     files.sort(key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True)
     screenshots = fetch_all_by_video_id(GENERATION_DATABASE_PATH)
     generations = fetch_all_generations_by_video_id(GENERATION_DATABASE_PATH)
+    metadata_by_id = video_metadata.fetch_all(GENERATION_DATABASE_PATH)
 
     outputs = []
     for path in files:
@@ -508,14 +574,23 @@ def get_output_files() -> list[OutputFile]:
             screenshot_id = screenshot["screenshot_id"]
             if not (OUTPUT_DIRECTORY / f"{screenshot_id}.png").is_file():
                 continue
+        metadata = metadata_by_id.get(path.stem)
+        video_type = (
+            metadata["type"]
+            if metadata is not None
+            else video_metadata.infer_video_type(path.stem)
+        )
         outputs.append(
             OutputFile(
                 id=path.stem,
+                type=video_type,
                 filename=path.name,
                 size_bytes=path.stat().st_size,
                 created_at=datetime.fromtimestamp(path.stat().st_mtime, timezone.utc),
                 url=f"/media/outputs/{path.name}",
                 download_url=f"/videos/{path.stem}/download",
+                tags=metadata["tags"] if metadata is not None else [],
+                feedback=metadata["feedback"] if metadata is not None else None,
                 screenshot_id=screenshot_id,
                 screenshot_url=(
                     f"/screenshots/{screenshot_id}/download"
@@ -635,6 +710,12 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
                 music_filename=selected_music.name if selected_music else None,
                 music_volume=payload.music_volume,
             )
+            video_metadata.upsert_video(
+                GENERATION_DATABASE_PATH,
+                created_path.stem,
+                "ugc-reaction",
+                request_body=payload.model_dump(mode="json"),
+            )
     except ScreenshotError as exc:
         _remove_generated_files(screenshot_output, created_path)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -643,6 +724,7 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
         if created_path is not None:
             try:
                 delete_video_records(GENERATION_DATABASE_PATH, created_path.stem)
+                video_metadata.delete(GENERATION_DATABASE_PATH, created_path.stem)
             except sqlite3.Error:
                 pass
         raise HTTPException(
@@ -654,6 +736,7 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
     video_id = created_path.stem
     return VideoResult(
         id=video_id,
+        type="ugc-reaction",
         status="completed",
         language=payload.language,
         caption_index=selected_index,
@@ -693,6 +776,12 @@ def create_chat_video(
         separators=(",", ":"),
     )
     try:
+        video_metadata.upsert_video(
+            GENERATION_DATABASE_PATH,
+            job_id,
+            "chat-video",
+            request_body=payload.model_dump(by_alias=True, mode="json"),
+        )
         job = chat_video_jobs.create(
             CHAT_VIDEO_DATABASE_PATH,
             job_id,
@@ -700,6 +789,10 @@ def create_chat_video(
             headed=headed,
         )
     except sqlite3.Error as exc:
+        try:
+            video_metadata.delete(GENERATION_DATABASE_PATH, job_id)
+        except sqlite3.Error:
+            pass
         raise HTTPException(
             status_code=500, detail="Could not enqueue chat video"
         ) from exc
@@ -776,9 +869,114 @@ def download_chat_video(job_id: str) -> FileResponse:
     return FileResponse(path, media_type="video/mp4", filename=path.name)
 
 
+@app.get("/videos/tags", response_model=list[VideoTags])
+def list_video_tags() -> list[VideoTags]:
+    if not OUTPUT_DIRECTORY.is_dir():
+        return []
+    result = []
+    for path in sorted(OUTPUT_DIRECTORY.glob("*.mp4"), key=lambda item: item.name):
+        try:
+            metadata = video_metadata.ensure_video(
+                GENERATION_DATABASE_PATH, path.stem
+            )
+        except sqlite3.Error as exc:
+            raise HTTPException(
+                status_code=500, detail="Could not list video tags"
+            ) from exc
+        result.append(
+            VideoTags(
+                video_id=path.stem,
+                type=metadata["type"],
+                tags=metadata["tags"],
+            )
+        )
+    return result
+
+
+@app.get("/videos/{video_id}/tags", response_model=VideoTags)
+def get_video_tags(video_id: str) -> VideoTags:
+    try:
+        metadata = _metadata_for_existing_video(video_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail="Could not read video tags") from exc
+    return VideoTags(
+        video_id=video_id,
+        type=metadata["type"],
+        tags=metadata["tags"],
+    )
+
+
+@app.post(
+    "/videos/{video_id}/tags",
+    response_model=VideoTags,
+    status_code=status.HTTP_200_OK,
+)
+def add_video_tags(video_id: str, payload: VideoTagsCreate) -> VideoTags:
+    try:
+        _metadata_for_existing_video(video_id)
+        metadata = video_metadata.add_tags(
+            GENERATION_DATABASE_PATH, video_id, payload.tags
+        )
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail="Could not add video tags") from exc
+    return VideoTags(
+        video_id=video_id,
+        type=metadata["type"],
+        tags=metadata["tags"],
+    )
+
+
+@app.delete("/videos/{video_id}/tags/{tag}", response_model=VideoTags)
+def remove_video_tag(video_id: str, tag: str) -> VideoTags:
+    try:
+        _metadata_for_existing_video(video_id)
+        metadata = video_metadata.remove_tag(
+            GENERATION_DATABASE_PATH, video_id, tag
+        )
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=500, detail="Could not remove video tag") from exc
+    return VideoTags(
+        video_id=video_id,
+        type=metadata["type"],
+        tags=metadata["tags"],
+    )
+
+
+@app.put("/videos/{video_id}/feedback", response_model=VideoFeedback)
+def update_video_feedback(
+    video_id: str, payload: VideoFeedbackUpdate
+) -> VideoFeedback:
+    try:
+        _metadata_for_existing_video(video_id)
+        metadata = video_metadata.set_feedback(
+            GENERATION_DATABASE_PATH, video_id, payload.value
+        )
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=500, detail="Could not update video feedback"
+        ) from exc
+    return VideoFeedback(
+        video_id=video_id,
+        type=metadata["type"],
+        value=metadata["feedback"],
+    )
+
+
+@app.get("/videos/{video_id}/metadata", response_model=VideoMetadata)
+def get_video_metadata(video_id: str) -> VideoMetadata:
+    try:
+        metadata = _metadata_for_existing_video(video_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=500, detail="Could not read video metadata"
+        ) from exc
+    return VideoMetadata(**metadata)
+
+
 @app.get("/videos/{video_id}", response_model=VideoStatus)
 def get_video_status(video_id: str, request: Request) -> VideoStatus:
     path = video_path(video_id)
+    metadata = video_metadata.ensure_video(GENERATION_DATABASE_PATH, path.stem)
     screenshot = fetch_by_video_id(GENERATION_DATABASE_PATH, path.stem)
     generation = fetch_generation_by_video_id(
         GENERATION_DATABASE_PATH, path.stem
@@ -786,8 +984,11 @@ def get_video_status(video_id: str, request: Request) -> VideoStatus:
     screenshot_id = screenshot["screenshot_id"] if screenshot else None
     return VideoStatus(
         id=path.stem,
+        type=metadata["type"],
         status="completed",
         download_url=str(request.url_for("download_video", video_id=path.stem)),
+        tags=metadata["tags"],
+        feedback=metadata["feedback"],
         screenshot_id=screenshot_id,
         screenshot_url=(
             str(request.url_for("download_screenshot", screenshot_id=screenshot_id))
