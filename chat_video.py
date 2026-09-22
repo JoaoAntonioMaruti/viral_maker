@@ -15,6 +15,7 @@ from base64 import urlsafe_b64encode
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import unquote, urlparse
 
 import chat_video_jobs
 
@@ -29,6 +30,11 @@ CAPTURE_HEIGHT = 960
 STOP_POLL_INTERVAL_MS = 100
 MINIMUM_RECORDING_MS = 250
 START_TRIM_MS = 100
+PROJECT_ROOT = Path(__file__).resolve().parent
+CHAT_AUDIO_DIRECTORY = PROJECT_ROOT / "chat_audio"
+CHAT_AUDIO_GENERATOR = PROJECT_ROOT / "tools" / "audio-generation.js"
+CHAT_AUDIO_URL_PREFIX = "/src/features/gameplay-director/audio/"
+PUBLIC_CHAT_AUDIO_URL_PREFIX = "/media/chat-audios/"
 
 
 class ChatVideoError(RuntimeError):
@@ -67,6 +73,133 @@ def _require_program(name: str) -> str:
     if executable is None:
         raise ChatVideoError(f"Required program was not found: {name}")
     return executable
+
+
+def prepare_chat_audio(
+    schema_json: str,
+    audio_directory: Path,
+    *,
+    generator_script: Path = CHAT_AUDIO_GENERATOR,
+    on_progress: Callable[[int, int], None] | None = None,
+) -> str:
+    """Generate requested ElevenLabs files and remove API-only controls."""
+    try:
+        schema = json.loads(schema_json)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise ChatVideoError("Chat video schema is not valid JSON") from exc
+    if not isinstance(schema, dict):
+        raise ChatVideoError("Chat video schema must be a JSON object")
+
+    generate_audio = schema.pop("generateAudio", False)
+    voice_id = schema.pop("voiceId", "")
+    force_regenerate = schema.pop("forceRegenerateAudio", False)
+    prepared_schema_json = json.dumps(
+        schema,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if not generate_audio:
+        return prepared_schema_json
+
+    node = _require_program("node")
+    if not generator_script.is_file():
+        raise ChatVideoError(f"Audio generator was not found: {generator_script}")
+    conversation_id = schema.get("id")
+    if not isinstance(conversation_id, str) or not conversation_id.strip():
+        raise ChatVideoError("Audio generation requires a conversation id")
+
+    output_directory = audio_directory / conversation_id
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        suffix=".json",
+    ) as input_file:
+        input_file.write(prepared_schema_json)
+        input_file.flush()
+        command = [
+            node,
+            str(generator_script),
+            "--input",
+            input_file.name,
+            "--output-dir",
+            str(output_directory),
+            "--yes",
+        ]
+        if isinstance(voice_id, str) and voice_id.strip():
+            command.extend(["--voice-id", voice_id.strip()])
+        if force_regenerate:
+            command.append("--force")
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=dict(os.environ),
+        )
+        output_lines = []
+        total = 0
+        completed = 0
+        assert process.stdout is not None
+        for line in process.stdout:
+            output_lines.append(line)
+            summary = re.match(
+                r"^Selected: (\d+)\s+Pending: (\d+)\s+Existing: (\d+)",
+                line,
+            )
+            if summary:
+                total = int(summary.group(1))
+                completed = int(summary.group(3))
+                if on_progress is not None:
+                    on_progress(completed, total)
+                continue
+            finished = re.match(r"^\[\d+/\d+\] done ", line)
+            if finished and total:
+                completed = min(total, completed + 1)
+                if on_progress is not None:
+                    on_progress(completed, total)
+        process.wait()
+    if process.returncode != 0:
+        detail = "".join(output_lines).strip() or "unknown error"
+        raise ChatVideoError(f"Could not generate chat audio: {detail}")
+    return prepared_schema_json
+
+
+def _chat_audio_path(request_url: str, audio_directory: Path) -> Path | None:
+    path = unquote(urlparse(request_url).path)
+    prefix = next(
+        (
+            candidate
+            for candidate in (
+                CHAT_AUDIO_URL_PREFIX,
+                PUBLIC_CHAT_AUDIO_URL_PREFIX,
+            )
+            if path.startswith(candidate)
+        ),
+        None,
+    )
+    if prefix is None:
+        return None
+    relative = path.removeprefix(prefix)
+    parts = Path(relative).parts
+    if len(parts) != 2 or Path(parts[1]).suffix.lower() != ".mp3":
+        return None
+    candidate = (audio_directory / parts[0] / parts[1]).resolve()
+    root = audio_directory.resolve()
+    if root not in candidate.parents or not candidate.is_file():
+        return None
+    return candidate
+
+
+def _serve_chat_audio(route: Any, audio_directory: Path) -> None:
+    path = _chat_audio_path(route.request.url, audio_directory)
+    if path is None:
+        route.abort()
+        return
+    route.fulfill(
+        path=str(path),
+        content_type="audio/mpeg",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 def _load_audio_sink(pactl: str, sink_name: str) -> str:
@@ -305,6 +438,7 @@ def capture_chat_video(
     output: Path,
     *,
     injection_script: Path,
+    audio_directory: Path = CHAT_AUDIO_DIRECTORY,
     client_url: str = "http://localhost:3000/play",
     headed: bool = False,
     should_stop: Callable[[], bool] | None = None,
@@ -375,6 +509,14 @@ def capture_chat_video(
                     viewport={"width": CAPTURE_WIDTH, "height": CAPTURE_HEIGHT},
                     screen={"width": CAPTURE_WIDTH, "height": CAPTURE_HEIGHT},
                     device_scale_factor=1,
+                )
+                context.route(
+                    "**/src/features/gameplay-director/audio/**",
+                    lambda route: _serve_chat_audio(route, audio_directory),
+                )
+                context.route(
+                    "**/media/chat-audios/**",
+                    lambda route: _serve_chat_audio(route, audio_directory),
                 )
                 context.add_init_script(script=javascript)
                 page = context.new_page()
@@ -535,6 +677,8 @@ class ChatVideoWorker:
         injection_script: Path,
         render_lock: threading.Lock,
         *,
+        audio_directory: Path = CHAT_AUDIO_DIRECTORY,
+        audio_generator: Path = CHAT_AUDIO_GENERATOR,
         poll_interval: float = 0.5,
         capture: Callable[..., ChatVideoResult] = capture_chat_video,
     ) -> None:
@@ -542,6 +686,8 @@ class ChatVideoWorker:
         self.output_directory = output_directory
         self.injection_script = injection_script
         self.render_lock = render_lock
+        self.audio_directory = audio_directory
+        self.audio_generator = audio_generator
         self.poll_interval = poll_interval
         self.capture = capture
         self._stop_event = threading.Event()
@@ -571,10 +717,38 @@ class ChatVideoWorker:
             output = self.output_directory / f"{job['id']}.mp4"
             try:
                 with self.render_lock:
-                    result = self.capture(
+                    chat_video_jobs.update_progress(
+                        self.database_path,
+                        job["id"],
+                        5,
+                        "preparing",
+                    )
+                    schema_json = prepare_chat_audio(
                         job["schema_json"],
+                        self.audio_directory,
+                        generator_script=self.audio_generator,
+                        on_progress=lambda completed, total: (
+                            chat_video_jobs.update_progress(
+                                self.database_path,
+                                job["id"],
+                                min(
+                                    8,
+                                    5
+                                    + (
+                                        round(3 * completed / total)
+                                        if total
+                                        else 0
+                                    ),
+                                ),
+                                f"generating-audio {completed}/{total}",
+                            )
+                        ),
+                    )
+                    result = self.capture(
+                        schema_json,
                         output,
                         injection_script=self.injection_script,
+                        audio_directory=self.audio_directory,
                         headed=bool(job["headed"]),
                         should_stop=lambda: chat_video_jobs.is_stop_requested(
                             self.database_path, job["id"]

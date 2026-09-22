@@ -1,10 +1,12 @@
 import json
+import os
 import tempfile
 import time
 import unittest
 from base64 import urlsafe_b64decode
 from pathlib import Path
 from threading import Lock
+from unittest.mock import Mock, patch
 
 import chat_video_jobs
 from chat_video import (
@@ -15,10 +17,12 @@ from chat_video import (
     ChatVideoWorker,
     _event_duration_ms,
     _estimate_recording_duration_ms,
+    _chat_audio_path,
     _recording_duration_ms,
     _sanitize_job_error,
     build_director_url,
     encode_schema,
+    prepare_chat_audio,
 )
 
 
@@ -105,6 +109,95 @@ class ChatVideoTests(unittest.TestCase):
         sanitized = _sanitize_job_error(error)
         self.assertIn("schema64=[redacted]", sanitized)
         self.assertNotIn("eyJzZWNyZXQi", sanitized)
+
+    def test_audio_controls_are_removed_when_generation_is_disabled(self):
+        prepared = prepare_chat_audio(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "generateAudio": False,
+                    "voiceId": "voice-1",
+                    "forceRegenerateAudio": True,
+                }
+            ),
+            Path("unused"),
+        )
+
+        self.assertEqual(json.loads(prepared), {"schemaVersion": 1})
+
+    def test_audio_is_generated_before_capture_with_voice_and_force(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            generator = root / "audio-generation.js"
+            generator.write_text("", encoding="utf-8")
+            runner_result = Mock(returncode=0)
+            runner_result.stdout = iter(
+                [
+                    "Selected: 3  Pending: 2  Existing: 1\n",
+                    "[1/2] start line-2 -> output\n",
+                    "[1/2] done line-2\n",
+                    "[2/2] start line-3 -> output\n",
+                    "[2/2] done line-3\n",
+                ]
+            )
+            schema = {
+                "schemaVersion": 1,
+                "id": "conversation-1",
+                "generateAudio": True,
+                "voiceId": "voice-1",
+                "forceRegenerateAudio": True,
+                "events": [],
+            }
+
+            progress = []
+            with patch.dict(os.environ, {"ELEVENLABS_API_KEY": "test-key"}), patch(
+                "chat_video._require_program", return_value="node"
+            ), patch(
+                "chat_video.subprocess.Popen", return_value=runner_result
+            ) as popen:
+                prepared = prepare_chat_audio(
+                    json.dumps(schema),
+                    root / "audio",
+                    generator_script=generator,
+                    on_progress=lambda completed, total: progress.append(
+                        (completed, total)
+                    ),
+                )
+
+            command = popen.call_args.args[0]
+            self.assertIn("--voice-id", command)
+            self.assertIn("voice-1", command)
+            self.assertIn("--force", command)
+            self.assertEqual(
+                command[command.index("--output-dir") + 1],
+                str(root / "audio" / "conversation-1"),
+            )
+            self.assertNotIn("generateAudio", json.loads(prepared))
+            self.assertEqual(progress, [(1, 3), (2, 3), (3, 3)])
+            self.assertIn("ELEVENLABS_API_KEY", popen.call_args.kwargs["env"])
+
+    def test_resolves_public_and_legacy_chat_audio_urls(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            audio = root / "conversation-1" / "line-1.mp3"
+            audio.parent.mkdir()
+            audio.write_bytes(b"audio")
+
+            self.assertEqual(
+                _chat_audio_path(
+                    "http://api.test/media/chat-audios/conversation-1/line-1.mp3",
+                    root,
+                ),
+                audio,
+            )
+            self.assertEqual(
+                _chat_audio_path(
+                    "http://client.test/src/features/gameplay-director/audio/"
+                    "conversation-1/line-1.mp3",
+                    root,
+                ),
+                audio,
+            )
 
     def test_worker_completes_persisted_job(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -53,6 +53,15 @@ class ApiTests(unittest.TestCase):
         )
         self.audio_directory_patch.start()
         self.addCleanup(self.audio_directory_patch.stop)
+        self.chat_audio_directory = Path(self.temp_directory.name) / "chat_audio"
+        self.chat_audio_directory.mkdir()
+        self.chat_audio_directory_patch = patch.object(
+            api,
+            "CHAT_AUDIO_DIRECTORY",
+            self.chat_audio_directory,
+        )
+        self.chat_audio_directory_patch.start()
+        self.addCleanup(self.chat_audio_directory_patch.stop)
         self.database_path = Path(self.temp_directory.name) / "audio_metrics.db"
         self.database_path_patch = patch.object(
             api, "DATABASE_PATH", self.database_path
@@ -100,6 +109,17 @@ class ApiTests(unittest.TestCase):
     def test_health(self):
         self.assertEqual(api.health(), {"status": "ok"})
 
+    def test_serves_generated_chat_audio_with_cors(self):
+        audio = self.chat_audio_directory / "conversation-1" / "line-1.mp3"
+        audio.parent.mkdir()
+        audio.write_bytes(b"generated audio")
+
+        response = api.get_chat_audio("conversation-1", "line-1.mp3")
+
+        self.assertEqual(Path(response.path), audio)
+        self.assertEqual(response.media_type, "audio/mpeg")
+        self.assertEqual(response.headers["access-control-allow-origin"], "*")
+
     def test_reaction_route_is_registered(self):
         routes = {
             (route.path, method)
@@ -111,6 +131,10 @@ class ApiTests(unittest.TestCase):
         self.assertNotIn(("/videos", "POST"), routes)
         self.assertIn(("/audios", "GET"), routes)
         self.assertIn(("/audios", "POST"), routes)
+        self.assertIn(
+            ("/media/chat-audios/{conversation_id}/{filename}", "GET"),
+            routes,
+        )
         self.assertIn(("/data", "GET"), routes)
         self.assertIn(("/outputs", "GET"), routes)
         self.assertIn(("/screenshots/{screenshot_id}/download", "GET"), routes)
@@ -129,7 +153,11 @@ class ApiTests(unittest.TestCase):
             route.path for route in api.app.routes if route.__class__.__name__ == "Mount"
         }
         self.assertTrue(
-            {"/media/audios", "/media/videos", "/media/outputs"}.issubset(
+            {
+                "/media/audios",
+                "/media/videos",
+                "/media/outputs",
+            }.issubset(
                 mount_paths
             )
         )
@@ -152,14 +180,21 @@ class ApiTests(unittest.TestCase):
 
     def _chat_request(self):
         request = Mock()
-        request.url_for.side_effect = lambda name, **params: {
-            "get_chat_video_job": (
-                f"http://test/videos/chat-video/{params['job_id']}"
-            ),
-            "download_chat_video": (
-                f"http://test/videos/chat-video/{params['job_id']}/download"
-            ),
-        }[name]
+        def url_for(name, **params):
+            if name == "get_chat_video_job":
+                return f"http://test/videos/chat-video/{params['job_id']}"
+            if name == "download_chat_video":
+                return (
+                    f"http://test/videos/chat-video/{params['job_id']}/download"
+                )
+            if name == "chat-audio-media":
+                return (
+                    "http://test/media/chat-audios/"
+                    f"{params['conversation_id']}/{params['filename']}"
+                )
+            raise KeyError(name)
+
+        request.url_for.side_effect = url_for
         return request
 
     def test_creates_and_reads_chat_video_job(self):
@@ -186,6 +221,44 @@ class ApiTests(unittest.TestCase):
         )
         self.assertEqual(metadata["type"], "chat-video")
         self.assertEqual(metadata["request_body"]["npc"]["name"], "ハナ")
+
+    def test_chat_video_adds_public_url_to_each_audio_node(self):
+        schema = self._chat_schema()
+        schema.update(
+            {
+                "generateAudio": True,
+                "voiceId": "voice-1",
+                "forceRegenerateAudio": False,
+            }
+        )
+        schema["events"] = [
+            {
+                "id": "takanashi-002",
+                "type": "npc.message",
+                "message": "Segunda fala",
+                "audio": {
+                    "text": "んんっ……",
+                    "language": "ja",
+                },
+            }
+        ]
+
+        created = api.create_chat_video(
+            api.ChatVideoCreate.model_validate(schema),
+            self._chat_request(),
+        )
+        stored = api.chat_video_jobs.fetch(
+            self.chat_video_database_path,
+            created.id,
+        )
+        queued_schema = json.loads(stored["schema_json"])
+
+        self.assertEqual(
+            queued_schema["events"][0]["audio"]["url"],
+            "http://test/media/chat-audios/"
+            "conversation-1/takanashi-002.mp3",
+        )
+        self.assertEqual(queued_schema["voiceId"], "voice-1")
 
     def test_adds_unique_tags_and_lists_them_for_all_video_types(self):
         reaction = self.output_directory / "reaction-1.mp4"

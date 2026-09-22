@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 import chat_video_jobs
 import video_metadata
 from audio_metrics import fetch_all_metrics, upsert_metrics
-from chat_video import ChatVideoWorker
+from chat_video import CHAT_AUDIO_DIRECTORY, ChatVideoWorker
 from download_tiktok_audio import AudioDownloadError, download_audio_with_metadata
 from generation_assets import (
     delete_video_records,
@@ -71,6 +71,7 @@ async def lifespan(_: FastAPI):
         OUTPUT_DIRECTORY,
         CHAT_VIDEO_SCRIPT,
         render_lock,
+        audio_directory=CHAT_AUDIO_DIRECTORY,
     )
     chat_video_worker = worker
     worker.start()
@@ -272,6 +273,12 @@ class ChatVideoCreate(BaseModel):
     npc: ChatVideoNpc
     options: dict[str, Any] = Field(default_factory=dict)
     events: list[dict[str, Any]] = Field(min_length=1)
+    generate_audio: bool = Field(default=False, alias="generateAudio")
+    voice_id: str = Field(default="", alias="voiceId")
+    force_regenerate_audio: bool = Field(
+        default=False,
+        alias="forceRegenerateAudio",
+    )
 
     @field_validator("events")
     @classmethod
@@ -410,6 +417,46 @@ def _chat_video_output_path(job: dict[str, Any]) -> Path:
     return candidate
 
 
+def _add_chat_audio_urls(
+    schema: dict[str, Any],
+    request: Request,
+) -> dict[str, Any]:
+    conversation_id = schema.get("id")
+    if not isinstance(conversation_id, str):
+        return schema
+    for event in schema.get("events", []):
+        if not isinstance(event, dict) or event.get("type") != "npc.message":
+            continue
+        audio = event.get("audio")
+        event_id = event.get("id")
+        if not isinstance(audio, dict) or not isinstance(event_id, str):
+            continue
+        audio["url"] = str(
+            request.url_for(
+                "chat-audio-media",
+                conversation_id=conversation_id,
+                filename=f"{event_id}.mp3",
+            )
+        )
+    return schema
+
+
+def _chat_audio_file(conversation_id: str, filename: str) -> Path:
+    if (
+        not conversation_id
+        or Path(conversation_id).name != conversation_id
+        or not filename
+        or Path(filename).name != filename
+        or Path(filename).suffix.lower() != ".mp3"
+    ):
+        raise HTTPException(status_code=404, detail="Chat audio not found")
+    conversation_directory = (CHAT_AUDIO_DIRECTORY / conversation_id).resolve()
+    candidate = (conversation_directory / filename).resolve()
+    if candidate.parent != conversation_directory or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Chat audio not found")
+    return candidate
+
+
 def _metadata_for_existing_video(video_id: str) -> dict[str, Any]:
     video_path(video_id)
     return video_metadata.ensure_video(GENERATION_DATABASE_PATH, video_id)
@@ -463,6 +510,19 @@ def resolve_initial_video(number: int) -> Path:
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get(
+    "/media/chat-audios/{conversation_id}/{filename}",
+    name="chat-audio-media",
+)
+def get_chat_audio(conversation_id: str, filename: str) -> FileResponse:
+    path = _chat_audio_file(conversation_id, filename)
+    return FileResponse(
+        path,
+        media_type="audio/mpeg",
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
 
 
 @app.get("/finals", response_model=list[FinalVideo])
@@ -770,8 +830,12 @@ def create_chat_video(
     headed: bool = False,
 ) -> ChatVideoJob:
     job_id = f"chat-{uuid4().hex}"
+    request_body = _add_chat_audio_urls(
+        payload.model_dump(by_alias=True, mode="json"),
+        request,
+    )
     schema_json = json.dumps(
-        payload.model_dump(by_alias=True),
+        request_body,
         ensure_ascii=False,
         separators=(",", ":"),
     )
@@ -780,7 +844,7 @@ def create_chat_video(
             GENERATION_DATABASE_PATH,
             job_id,
             "chat-video",
-            request_body=payload.model_dump(by_alias=True, mode="json"),
+            request_body=request_body,
         )
         job = chat_video_jobs.create(
             CHAT_VIDEO_DATABASE_PATH,

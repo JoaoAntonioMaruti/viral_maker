@@ -119,6 +119,46 @@ curl -X POST http://localhost:8000/videos/chat-video \
   --data @conversation.json
 ```
 
+To generate ElevenLabs audio before recording, add the controls below at the
+top level and put the TTS content in each `npc.message.audio` object:
+
+```json
+{
+  "generateAudio": true,
+  "voiceId": "ELEVENLABS_VOICE_ID",
+  "forceRegenerateAudio": false,
+  "events": [
+    {
+      "id": "takanashi-002",
+      "type": "npc.message",
+      "message": "Segunda fala",
+      "audio": {"text": "んんっ……", "language": "ja"}
+    }
+  ]
+}
+```
+
+Existing `<conversation-id>/<message-id>.mp3` files are reused unless
+`forceRegenerateAudio` is `true`. Before the recording starts, the queued
+schema receives an absolute `audio.url` for every audio node. Generated files
+are stored under `chat_audio/` and are also available at:
+
+```text
+GET /media/chat-audios/{conversation-id}/{message-id}.mp3
+```
+
+New generation requires `ELEVENLABS_API_KEY` in the API process environment.
+The key is not required when every requested file already exists and force
+regeneration is disabled.
+
+```bash
+export ELEVENLABS_API_KEY='your-key'
+.venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
+```
+
+While audio is being prepared, job polling reports stages such as
+`generating-audio 1/3`, `generating-audio 2/3`, and `generating-audio 3/3`.
+
 To show the Chromium window while recording for local debugging, add the
 `headed=true` query parameter. The setting is stored with the job and defaults
 to `false`:

@@ -231,7 +231,9 @@ async function main(argv = process.argv.slice(2)) {
   const modelId = args.modelId || DEFAULT_MODEL_ID
   const apiKey = process.env.ELEVENLABS_API_KEY
 
-  if (!dryRun && !apiKey) throw new Error('Missing ELEVENLABS_API_KEY in the shell environment.')
+  if (!dryRun && selectedJobs.length && !apiKey) {
+    throw new Error('Missing ELEVENLABS_API_KEY in the shell environment.')
+  }
   console.log(`Input: ${inputPath}`)
   console.log(`Output: ${outputDir}`)
   console.log(`Voice: ${voiceId}  Model: ${modelId}  Stability: ${stability}  Format: ${outputFormat}`)
