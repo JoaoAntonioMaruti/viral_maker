@@ -1,62 +1,61 @@
 # Viral Maker
 
-CLI em Python para colocar uma legenda no primeiro vídeo e concatená-lo com um
-vídeo final usando FFmpeg. O resultado é normalizado para 1080x1920, 60 fps e
-H.264, adequado a vídeos verticais de redes sociais.
-Todas as faixas de áudio dos vídeos de entrada são descartadas. Na execução
-interativa, a CLI pergunta se deve adicionar música de fundo baixada de uma
-URL do TikTok, com 100% de volume por padrão. Não há música padrão — sem uma
-URL ou um arquivo explícito, o vídeo sai sem trilha sonora.
+Python CLI that adds a caption to an opening video and concatenates it with an
+ending video using FFmpeg. The result is normalized to 1080x1920, 60 fps, and
+H.264 for vertical social-media videos.
 
-## Requisitos
+All audio streams from the input videos are discarded. In interactive mode,
+the CLI asks whether to add background music downloaded from a TikTok URL, at
+100% volume by default. There is no default music: without a URL or an explicit
+file, the output video has no soundtrack.
 
-- Python 3.10 ou superior
-- FFmpeg e FFprobe
-- ImageMagick (`magick`, usado para compor o texto com a seta do carrossel)
-- yt-dlp (necessário para baixar áudio do TikTok)
-- Fonte `Noto Sans CJK JP` (incluída no pacote Noto CJK de várias distribuições)
-- Chromium gerenciado pelo Playwright (`make setup` instala automaticamente)
+## Requirements
 
-## Uso
+- Python 3.10 or newer
+- FFmpeg and FFprobe
+- ImageMagick (`magick`, used to compose carousel text and arrows)
+- yt-dlp (required to download audio from TikTok)
+- `Noto Sans CJK JP` font (included in the Noto CJK package on many systems)
+- Chromium managed by Playwright (`make setup` installs it automatically)
 
-Com os padrões do projeto, escolhe uma legenda em inglês aleatoriamente:
+## Usage
+
+With the project defaults, this selects a random English caption:
 
 ```bash
 python3 video_maker.py
 ```
 
-O vídeo será salvo automaticamente em `outputs`, com um nome no formato
-`{timestamp}_{video_number}.mp4`. Por exemplo: `outputs/20260915_143052_1.mp4`.
-O número é obtido do nome do primeiro vídeo.
+The video is saved automatically in `outputs` as
+`{timestamp}_{video_number}.mp4`, for example
+`outputs/20260915_143052_1.mp4`. The number comes from the opening video's
+filename.
 
-Selecionando idioma, frase e posição:
+Select the language, caption, and position:
 
 ```bash
-python3 video_maker.py --language pt --index 3 --position center
+python3 video_maker.py --language en --index 3 --position center
 ```
 
-Responda `Y` ou pressione Enter para adicionar música; a CLI pedirá uma URL do
-TikTok, baixará o MP3 em `audio/` e o usará na mesma montagem. Responda `n` para
-gerar sem música. Em scripts, use `--music-url URL` ou `--music arquivo.mp3`
-para uma faixa já baixada, ou `--no-music`.
-Controle o volume com `--music-volume`:
+Answer `Y` or press Enter to add music. The CLI asks for a TikTok URL,
+downloads the MP3 to `audio/`, and uses it in the same render. Answer `n` to
+render without music. In scripts, use `--music-url URL`, `--music file.mp3` for
+an existing track, or `--no-music`. Set the volume with `--music-volume`:
 
 ```bash
-python3 video_maker.py --music-url 'https://vm.tiktok.com/exemplo/'
-python3 video_maker.py --music audio/outra-musica.mp3 --music-volume 0.15
+python3 video_maker.py --music-url 'https://vm.tiktok.com/example/'
+python3 video_maker.py --music audio/another-track.mp3 --music-volume 0.15
 python3 video_maker.py --no-music
 ```
 
-Para indicar que existe uma imagem no próximo item do carrossel, adicione o
-texto localizado de `data.json` ao vídeo final. A indicação usa três cópias do
-emoji de seta do iOS em `assets/right-arrow.png`, dimensionadas abaixo da altura
-da fonte:
+Add the localized carousel prompt from `data.json` to the ending video with:
 
 ```bash
 python3 video_maker.py --final 2 --carousel --carousel-position top
 ```
 
-Todos os caminhos também podem ser alterados:
+The prompt uses three copies of `assets/right-arrow.png`, scaled below the font
+height. All paths can also be changed:
 
 ```bash
 python3 video_maker.py \
@@ -68,35 +67,34 @@ python3 video_maker.py \
   --position bottom
 ```
 
-Os índices começam em 1. Sem `--index`, uma frase do idioma escolhido é
-sorteada. O idioma padrão é `en` e a posição padrão é `top`. Use `--output`
-para escolher outro caminho. Para substituir uma saída existente, passe
-`--overwrite`.
+Indexes start at 1. Without `--index`, a caption is selected randomly from the
+chosen language. The default language is `en` and the default position is
+`top`. Use `--output` to choose a different path and `--overwrite` to replace
+an existing output.
 
-Os vídeos finais ficam em `videos/final_videos` e podem usar qualquer nome com
-extensão `.mp4`. Eles são numerados pela ordem de criação, do mais antigo ao
-mais novo. Selecione a posição com `--final 2`; sem esse argumento, será usado o
-primeiro vídeo.
+Ending videos live in `videos/final_videos` and may use any `.mp4` filename.
+They are numbered by creation time, oldest first. Select one with `--final 2`;
+without that argument, the first video is used.
 
-## API HTTP
+## HTTP API
 
-O caminho mais simples para iniciar a API em desenvolvimento é:
+Start the development API with:
 
 ```bash
 make dev
 ```
 
-Outros comandos disponíveis:
+Other available commands:
 
 ```bash
-make setup     # instala dependências
-make api       # inicia sem recarregamento automático
-make test      # executa os testes
-make generate  # abre a geração interativa
-make help      # lista os comandos
+make setup     # install dependencies
+make api       # start without automatic reload
+make test      # run the tests
+make generate  # open interactive generation
+make help      # list commands
 ```
 
-Alternativamente, instale as dependências e inicie o servidor manualmente:
+Alternatively, install dependencies and start the server manually:
 
 ```bash
 python3 -m venv .venv
@@ -104,25 +102,25 @@ python3 -m venv .venv
 .venv/bin/uvicorn api:app --host 0.0.0.0 --port 8000
 ```
 
-A documentação interativa estará disponível em `http://localhost:8000/docs`.
+Interactive documentation is available at `http://localhost:8000/docs`.
 
-Crie um vídeo:
+Create a video:
 
 ```bash
 curl -X POST http://localhost:8000/videos/reaction \
   -H 'Content-Type: application/json' \
-  -d '{"language":"pt","index":3,"position":"center","video":2,"final":2,"carousel":true,"carousel_position":"top","music":true,"music_filename":"7559553583222607107.mp3","music_volume":1.0,"npc_id":"ed9721fb-fa6c-4e66-85a0-c3dd0ba2a5df","clothes":"default","npc_name":"ハナ","description":"Descrição da cena","message":"Mensagem do diálogo","actions":["Primeira ação","Segunda ação"]}'
+  -d '{"language":"en","index":3,"position":"center","video":2,"final":2,"carousel":true,"carousel_position":"top","music":true,"music_filename":"7559553583222607107.mp3","music_volume":1.0,"npc_id":"ed9721fb-fa6c-4e66-85a0-c3dd0ba2a5df","clothes":"default","npc_name":"Hana","description":"Scene description","message":"Dialogue message","actions":["First action","Second action"]}'
 ```
 
-O processamento é síncrono: a resposta é enviada quando o vídeo estiver pronto.
-Ela contém o identificador, a legenda selecionada e a URL para download. Consulte
-`GET /videos/{id}` ou baixe com `GET /videos/{id}/download`. Consulte as opções
-de vídeo inicial com `GET /videos`, de vídeo final com `GET /finals` e as músicas
-disponíveis com `GET /audios`.
+Processing is synchronous: the response is returned when the video is ready.
+It contains the ID, selected caption, and download URL. Check
+`GET /videos/{id}` or download it with `GET /videos/{id}/download`. Available
+opening videos, ending videos, and tracks are listed by `GET /videos`,
+`GET /finals`, and `GET /audios` respectively.
 
-Quando `carousel` é `true`, a mesma chamada também gera o PNG do próximo slide.
-Nesse caso, `npc_id`, `clothes`, `npc_name`, `description`, `message` e `actions`
-são obrigatórios. A URL do cliente e o tamanho usam estes padrões:
+When `carousel` is `true`, the same request also generates the PNG for the next
+slide. In that case, `npc_id`, `clothes`, `npc_name`, `description`, `message`,
+and `actions` are required. The client URL and dimensions use these defaults:
 
 ```json
 {
@@ -132,98 +130,95 @@ são obrigatórios. A URL do cliente e o tamanho usam estes padrões:
 }
 ```
 
-Os três campos podem ser alterados no payload. A resposta inclui
-`screenshot_id` e `screenshot_url`; `GET /videos/{id}` também retorna essa
-associação. O PNG pode ser baixado em `GET /screenshots/{screenshot_id}/download`.
-Vídeo, screenshot e parâmetros de geração são associados no SQLite
-`generation_assets.db`.
+All three fields can be changed in the payload. The response includes
+`screenshot_id` and `screenshot_url`; `GET /videos/{id}` returns this relation
+as well. Download the PNG from `GET /screenshots/{screenshot_id}/download`.
+Videos, screenshots, and generation parameters are associated in the local
+`generation_assets.db` SQLite database.
 
-Consulte o histórico dos mocks de fala, do mais recente para o mais antigo:
+Get the mock-dialogue history from newest to oldest:
 
 ```bash
 curl http://localhost:8000/screenshots/history
 ```
 
-Filtre pelo idioma (`en`, `pt` ou `ja`) com o parâmetro `language`:
+Filter by language (`en`, `pt`, or `ja`) with the `language` parameter:
 
 ```bash
-curl 'http://localhost:8000/screenshots/history?language=ja'
+curl 'http://localhost:8000/screenshots/history?language=en'
 ```
 
-Cada item contém os IDs e URLs do vídeo e screenshot, idioma, `npc_id`,
-`clothes`, URL do cliente, dimensões, nome, descrição, mensagem, ações e data de
-criação. Registros antigos, criados antes desse campo, retornam `language` como
-`null`.
+Each item contains the video and screenshot IDs and URLs, language, `npc_id`,
+`clothes`, client URL, dimensions, name, description, message, actions, and
+creation date. Older records created before the language field return
+`language` as `null`.
 
-Liste os vídeos iniciais:
+List opening videos:
 
 ```bash
 curl http://localhost:8000/videos
 ```
 
-Cada item contém `number`, `filename`, `size_bytes` e a `url` de streaming. A
-listagem considera qualquer arquivo `.mp4` diretamente em `videos`, sem incluir
-a subpasta `videos/final_videos`, e o numera pela ordem de criação, do mais antigo
-ao mais novo. Passe o `number` escolhido no campo `video` de
-`POST /videos/reaction`; se omitido, o primeiro vídeo será usado.
+Each item contains `number`, `filename`, `size_bytes`, and its streaming `url`.
+The list includes every `.mp4` directly under `videos`, excludes
+`videos/final_videos`, and numbers files by creation time, oldest first. Pass
+the chosen `number` in the `video` field of `POST /videos/reaction`; the first
+video is used when omitted.
 
-Exemplo da listagem de músicas:
+List available tracks:
 
 ```bash
 curl http://localhost:8000/audios
 ```
 
-Cada item contém `filename`, `size_bytes` e `url`; caminhos internos do
-servidor não são retornados. O campo `url` aponta para o arquivo servido por HTTP.
-Passe exatamente esse `filename` como `music_filename` em `POST /videos/reaction`.
-Não existe música padrão: se `music_filename` for omitido, o vídeo sai sem
-música mesmo com `music: true`.
-Cada item também traz `views`, `likes`, `comments` e `shares` com as métricas de
-engajamento do TikTok, quando conhecidas; esses campos são `null` quando o
-arquivo não tem métricas associadas (arquivos baixados antes desta feature ou
-adicionados manualmente).
+Each item contains `filename`, `size_bytes`, and `url`; internal server paths
+are not returned. Pass that exact `filename` as `music_filename` to
+`POST /videos/reaction`. There is no default track: if `music_filename` is
+omitted, the video has no music even when `music` is `true`.
 
-Baixe um áudio do TikTok diretamente pela API, salvando o arquivo em `audio/`
-e registrando as métricas de engajamento no SQLite local:
+Each item also includes TikTok engagement metrics in `views`, `likes`,
+`comments`, and `shares` when known. These fields are `null` when no metrics
+are associated with the file.
+
+Download TikTok audio through the API and record its engagement metrics:
 
 ```bash
 curl -X POST http://localhost:8000/audios \
   -H 'Content-Type: application/json' \
-  -d '{"url":"https://www.tiktok.com/@usuario/video/123"}'
+  -d '{"url":"https://www.tiktok.com/@user/video/123"}'
 ```
 
-A resposta (HTTP 201) é o mesmo formato de `GET /audios`, já com `views`,
-`likes`, `comments` e `shares` preenchidos quando o TikTok expõe essas
-métricas. Aceita `overwrite` (padrão `false`) e `cookies_from_browser` para
-vídeos que exigem sessão autenticada. Um download inválido ou que falhe
-retorna HTTP 400 com o motivo.
+The HTTP 201 response has the same format as `GET /audios`, with metrics filled
+when TikTok exposes them. The endpoint accepts `overwrite` (default `false`)
+and `cookies_from_browser` for videos that require an authenticated session.
+An invalid or failed download returns HTTP 400 with the reason.
 
-Liste as legendas filtrando pelo idioma:
+List captions for a language:
 
 ```bash
-curl 'http://localhost:8000/data?language=pt'
+curl 'http://localhost:8000/data?language=en'
 ```
 
-A resposta contém `language`, o texto `carousel` e a lista `data`. Os idiomas
-aceitos são `en`, `pt` e `ja`.
+The response contains `language`, the `carousel` text, and the `data` list.
+Accepted languages are `en`, `pt`, and `ja`.
 
-Liste todos os vídeos gerados, do mais recente para o mais antigo:
+List generated videos from newest to oldest:
 
 ```bash
 curl http://localhost:8000/outputs
 ```
 
-Cada item contém `id`, `filename`, `size_bytes`, `created_at`, `url` para
-streaming, `download_url` e `generation`. O objeto `generation` registra no
-SQLite os vídeos inicial e final, idioma, legenda selecionada, posições,
-carousel e música usados na geração. Quando o vídeo possui um próximo slide,
-também contém `screenshot_id` e `screenshot_url`. Arquivos antigos que não têm
-registro no SQLite retornam `generation: null`.
+Each item contains `id`, `filename`, `size_bytes`, `created_at`, a streaming
+`url`, `download_url`, and `generation`. The `generation` object records the
+opening and ending videos, language, selected caption, positions, carousel,
+and music in SQLite. Videos with a next slide also contain `screenshot_id` and
+`screenshot_url`. Older files without a SQLite record return
+`generation: null`.
 
-`GET /videos/{id}` também retorna o objeto `generation` junto ao status e à
-associação opcional com screenshot.
+`GET /videos/{id}` also returns the `generation` object with the status and
+optional screenshot association.
 
-As pastas de mídia também são expostas diretamente, com suporte a streaming:
+Media directories are exposed directly with streaming support:
 
 ```text
 GET /media/audios/{filename}
@@ -231,40 +226,31 @@ GET /media/videos/{path}
 GET /media/outputs/{filename}
 ```
 
-Exemplos:
+## Download TikTok audio
 
-```text
-http://localhost:8000/media/audios/7559553583222607107.mp3
-http://localhost:8000/media/videos/1.mp4
-http://localhost:8000/media/videos/final_videos/2.mp4
-http://localhost:8000/media/outputs/20260915_051435_1.mp4
-```
-
-## Baixar áudio do TikTok
-
-Use somente vídeos próprios ou conteúdo que você tenha autorização para baixar.
-O comando mostra porcentagem, velocidade e tempo restante durante o download,
-extrai o áudio em MP3 e salva em `audio/{tiktok_id}.mp3`:
+Only download your own videos or content you are authorized to use. The
+command displays progress, extracts the audio as MP3, and saves it as
+`audio/{tiktok_id}.mp3`:
 
 ```bash
-python3 download_tiktok_audio.py 'https://www.tiktok.com/@usuario/video/123'
+python3 download_tiktok_audio.py 'https://www.tiktok.com/@user/video/123'
 ```
 
-Para vídeos que exigem uma sessão autenticada, importe os cookies do navegador:
+For videos that require an authenticated session, import browser cookies:
 
 ```bash
 python3 download_tiktok_audio.py URL --cookies-from-browser firefox
 ```
 
-Depois, use o caminho exibido pelo comando na montagem:
+Then use the path printed by the command in a render:
 
 ```bash
 python3 video_maker.py --music audio/123.mp3
 ```
 
-## Screenshots de páginas web
+## Webpage screenshots
 
-Capture o viewport de uma página como PNG usando Chromium headless:
+Capture a page viewport as PNG using headless Chromium:
 
 ```bash
 .venv/bin/python screenshot.py https://example.com \
@@ -274,15 +260,15 @@ Capture o viewport de uma página como PNG usando Chromium headless:
   --output screenshot.png
 ```
 
-O argumento `--output` é opcional. Quando omitido, o arquivo é criado em
-`outputs/` seguindo o padrão de timestamp dos vídeos, por exemplo
+The `--output` argument is optional. When omitted, the file is created in
+`outputs/` using the video timestamp convention, for example
 `outputs/20260915_143052_screenshot.png`.
 
-A captura usa supersampling 2x e mantém o PNG nas dimensões informadas. Isso
-melhora a nitidez sem alterar o tamanho ou o layout dos componentes da página.
+Capture uses 2x supersampling and keeps the PNG at the requested dimensions.
+This improves sharpness without changing the size or component layout.
 
-Também é possível executar um arquivo JavaScript depois do carregamento,
-aguardar um seletor visível e aplicar um delay adicional em milissegundos:
+You can also execute JavaScript after page load, wait for a visible selector,
+and apply an additional delay in milliseconds:
 
 ```bash
 .venv/bin/python screenshot.py https://example.com \
@@ -295,28 +281,13 @@ aguardar um seletor visível e aplicar um delay adicional em milissegundos:
   --output screenshot.png
 ```
 
-Quando `--wait-for` e `--delay` são usados juntos, o seletor é aguardado
-primeiro. A saída existente só é substituída quando `--overwrite` é informado.
-O Chromium e o contexto da página são fechados automaticamente mesmo em caso
-de erro.
+When `--wait-for` and `--delay` are used together, the selector is awaited
+first. Existing output is replaced only with `--overwrite`. Chromium and the
+page context are closed automatically even on errors.
 
-Para acompanhar a automação com a janela do Chromium visível, adicione
-`--headed`:
-
-```bash
-.venv/bin/python screenshot.py http://127.0.0.1:3000/play \
-  --width 1080 \
-  --height 1920 \
-  --npc-id NPC_ID \
-  --clothes default \
-  --js assets/inject.js \
-  --delay 2000 \
-  --headed \
-  --output screenshot.png
-```
-
-Os dados do chat mockado também podem ser substituídos pela CLI. Repita
-`--action` para informar mais de uma ação:
+Add `--headed` to watch the automation in a visible Chromium window. Mock chat
+data can also be overridden through the CLI; repeat `--action` for multiple
+actions:
 
 ```bash
 .venv/bin/python screenshot.py http://127.0.0.1:3000/play \
@@ -324,26 +295,25 @@ Os dados do chat mockado também podem ser substituídos pela CLI. Repita
   --height 960 \
   --npc-id NPC_ID \
   --clothes school_uniform \
-  --npc-name 'ハナ' \
-  --description 'Descrição da cena' \
-  --message 'Mensagem do diálogo' \
-  --action 'Primeira ação' \
-  --action 'Segunda ação' \
+  --npc-name 'Hana' \
+  --description 'Scene description' \
+  --message 'Dialogue message' \
+  --action 'First action' \
+  --action 'Second action' \
   --js assets/inject.js \
   --headed
 ```
 
-Sem esses campos opcionais, são usados os textos japoneses padrão definidos em
-`screenshot.py`. A roupa padrão é `default`.
+Without those optional fields, the default Japanese text defined in
+`screenshot.py` is used. The default outfit is `default`.
 
-Se as dependências tiverem sido instaladas manualmente, instale também o
-navegador usado pelo Playwright:
+If dependencies were installed manually, also install Chromium for Playwright:
 
 ```bash
 .venv/bin/playwright install chromium
 ```
 
-## Testes
+## Tests
 
 ```bash
 python3 -m unittest -v

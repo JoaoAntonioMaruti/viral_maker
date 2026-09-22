@@ -150,7 +150,7 @@ def _download(
             cookies_from_browser=cookies_from_browser,
             info_json_directory=temp_dir_path if fetch_metadata else None,
         )
-        print("Iniciando download do áudio do TikTok...", flush=True)
+        print("Starting TikTok audio download...", flush=True)
         try:
             subprocess.run(command, check=True)
         except subprocess.CalledProcessError as exc:

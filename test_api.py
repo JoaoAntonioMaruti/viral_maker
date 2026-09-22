@@ -72,8 +72,8 @@ class ApiTests(unittest.TestCase):
             json.dumps(
                 {
                     "pt": {
-                        "carousel": "Resposta dela",
-                        "data": ["Primeira", "Segunda"],
+                        "carousel": "Her reply",
+                        "data": ["First", "Second"],
                     }
                 }
             ),
@@ -287,8 +287,8 @@ class ApiTests(unittest.TestCase):
             response.model_dump(),
             {
                 "language": "pt",
-                "carousel": "Resposta dela",
-                "data": ["Primeira", "Segunda"],
+                "carousel": "Her reply",
+                "data": ["First", "Second"],
             },
         )
 

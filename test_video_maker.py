@@ -29,8 +29,8 @@ class CaptionTests(unittest.TestCase):
     def test_loads_requested_language(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "data.json"
-            path.write_text(json.dumps({"pt": {"data": ["uma", "duas"]}}))
-            self.assertEqual(load_captions(path, "pt"), ["uma", "duas"])
+            path.write_text(json.dumps({"pt": {"data": ["one", "two"]}}))
+            self.assertEqual(load_captions(path, "pt"), ["one", "two"])
 
     def test_rejects_missing_language(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -62,16 +62,16 @@ class CaptionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "data.json"
             path.write_text(
-                json.dumps({"pt": {"carousel": "Resposta dela >>>"}})
+                json.dumps({"pt": {"carousel": "Her reply >>>"}})
             )
             self.assertEqual(
-                load_carousel_caption(path, "pt"), "Resposta dela >>>"
+                load_carousel_caption(path, "pt"), "Her reply >>>"
             )
 
     def test_rejects_missing_carousel_caption(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "data.json"
-            path.write_text(json.dumps({"pt": {"data": ["texto"]}}))
+            path.write_text(json.dumps({"pt": {"data": ["text"]}}))
             with self.assertRaisesRegex(VideoMakerError, "Missing carousel"):
                 load_carousel_caption(path, "pt")
 
@@ -174,14 +174,14 @@ class FfmpegCommandTests(unittest.TestCase):
     def test_carousel_image_contains_only_three_arrows(self, run_process):
         create_carousel_overlay(
             "magick",
-            "Resposta dela",
+            "Her reply",
             Path("right-arrow.png"),
             Path("carousel.png"),
         )
 
         command = run_process.call_args.args[0]
         self.assertEqual(command[command.index("-pointsize") + 1], "76")
-        self.assertIn("label:Resposta dela", command)
+        self.assertIn("label:Her reply", command)
         self.assertIn("35%x1+0+0", command)
         self.assertEqual(command[command.index("-resize") + 1], "52x52")
         self.assertEqual(command.count("right-arrow.png"), 3)
@@ -216,8 +216,8 @@ class MusicPromptTests(unittest.TestCase):
     def test_empty_answer_accepts_default_music(self):
         self.assertTrue(prompt_for_music(lambda _prompt: ""))
 
-    def test_accepts_portuguese_yes(self):
-        self.assertTrue(prompt_for_music(lambda _prompt: "sim"))
+    def test_accepts_yes(self):
+        self.assertTrue(prompt_for_music(lambda _prompt: "yes"))
 
     def test_accepts_no(self):
         self.assertFalse(prompt_for_music(lambda _prompt: "n"))

@@ -178,14 +178,14 @@ def prompt_for_music(input_fn=None) -> bool:
         input_fn = input
     while True:
         try:
-            answer = input_fn("Adicionar música de fundo? [Y/n] ").strip().lower()
+            answer = input_fn("Add background music? [Y/n] ").strip().lower()
         except EOFError:
             return True
-        if answer in {"", "y", "yes", "s", "sim"}:
+        if answer in {"", "y", "yes"}:
             return True
-        if answer in {"n", "no", "nao", "não"}:
+        if answer in {"n", "no"}:
             return False
-        print("Responda com Y/sim ou n/não.", file=sys.stderr)
+        print("Answer with Y/yes or n/no.", file=sys.stderr)
 
 
 def prompt_for_music_url(input_fn=None) -> str:
@@ -193,12 +193,12 @@ def prompt_for_music_url(input_fn=None) -> str:
         input_fn = input
     while True:
         try:
-            url = input_fn("URL do TikTok: ").strip()
+            url = input_fn("TikTok URL: ").strip()
         except EOFError as exc:
             raise AudioDownloadError("TikTok URL was not provided") from exc
         if url:
             return url
-        print("Informe a URL do TikTok.", file=sys.stderr)
+        print("Enter the TikTok URL.", file=sys.stderr)
 
 
 def resolve_cli_music(
