@@ -67,6 +67,14 @@ class ApiTests(unittest.TestCase):
         )
         self.generation_database_path_patch.start()
         self.addCleanup(self.generation_database_path_patch.stop)
+        self.chat_video_database_path = (
+            Path(self.temp_directory.name) / "chat_video_jobs.db"
+        )
+        self.chat_video_database_path_patch = patch.object(
+            api, "CHAT_VIDEO_DATABASE_PATH", self.chat_video_database_path
+        )
+        self.chat_video_database_path_patch.start()
+        self.addCleanup(self.chat_video_database_path_patch.stop)
         self.caption_data = Path(self.temp_directory.name) / "data.json"
         self.caption_data.write_text(
             json.dumps(
@@ -107,6 +115,10 @@ class ApiTests(unittest.TestCase):
         self.assertIn(("/outputs", "GET"), routes)
         self.assertIn(("/screenshots/{screenshot_id}/download", "GET"), routes)
         self.assertIn(("/screenshots/history", "GET"), routes)
+        self.assertIn(("/videos/chat-video", "POST"), routes)
+        self.assertIn(("/videos/chat-video/{job_id}", "GET"), routes)
+        self.assertIn(("/videos/chat-video/{job_id}/download", "GET"), routes)
+        self.assertIn(("/videos/chat-video/{job_id}/stop", "POST"), routes)
         mount_paths = {
             route.path for route in api.app.routes if route.__class__.__name__ == "Mount"
         }
@@ -118,6 +130,138 @@ class ApiTests(unittest.TestCase):
 
     def test_default_music_volume_is_full(self):
         self.assertEqual(api.VideoCreate().music_volume, 1.0)
+
+    def _chat_schema(self):
+        return {
+            "schemaVersion": 1,
+            "id": "conversation-1",
+            "npc": {
+                "id": "npc-1",
+                "name": "ハナ",
+                "renderer": {"type": "npc-renderer-v2", "strict": True},
+            },
+            "options": {"suppressSideEffects": True},
+            "events": [{"type": "chat.open", "delayMs": 300}],
+        }
+
+    def _chat_request(self):
+        request = Mock()
+        request.url_for.side_effect = lambda name, **params: {
+            "get_chat_video_job": (
+                f"http://test/videos/chat-video/{params['job_id']}"
+            ),
+            "download_chat_video": (
+                f"http://test/videos/chat-video/{params['job_id']}/download"
+            ),
+        }[name]
+        return request
+
+    def test_creates_and_reads_chat_video_job(self):
+        payload = api.ChatVideoCreate.model_validate(self._chat_schema())
+
+        created = api.create_chat_video(payload, self._chat_request())
+        fetched = api.get_chat_video_job(created.id, self._chat_request())
+
+        self.assertEqual(created.status, "queued")
+        self.assertFalse(created.headed)
+        self.assertFalse(created.stop_requested)
+        self.assertFalse(created.stopped_early)
+        self.assertEqual(fetched.id, created.id)
+        self.assertIsNone(created.download_url)
+        stored = api.chat_video_jobs.fetch(
+            self.chat_video_database_path, created.id
+        )
+        self.assertEqual(json.loads(stored["schema_json"])["npc"]["name"], "ハナ")
+
+    def test_creates_headed_chat_video_job_for_debugging(self):
+        payload = api.ChatVideoCreate.model_validate(self._chat_schema())
+
+        created = api.create_chat_video(
+            payload,
+            self._chat_request(),
+            headed=True,
+        )
+
+        self.assertTrue(created.headed)
+        stored = api.chat_video_jobs.fetch(
+            self.chat_video_database_path, created.id
+        )
+        self.assertEqual(stored["headed"], 1)
+
+    def test_chat_video_rejects_gameplay_wrapper(self):
+        with self.assertRaises(ValidationError):
+            api.ChatVideoCreate.model_validate(
+                {
+                    "schemaVersion": 1,
+                    "id": "gameplay-script",
+                    "environment": {},
+                    "steps": [],
+                }
+            )
+
+    def test_chat_video_rejects_event_without_type(self):
+        schema = self._chat_schema()
+        schema["events"] = [{"delayMs": 10}]
+        with self.assertRaisesRegex(ValidationError, "non-empty type"):
+            api.ChatVideoCreate.model_validate(schema)
+
+    def test_completed_chat_video_can_be_downloaded(self):
+        created = api.create_chat_video(
+            api.ChatVideoCreate.model_validate(self._chat_schema()),
+            self._chat_request(),
+        )
+        output = self.output_directory / f"{created.id}.mp4"
+        output.write_bytes(b"chat video")
+        api.chat_video_jobs.complete(
+            self.chat_video_database_path,
+            created.id,
+            output_filename=output.name,
+            execution_id="execution-1",
+            conversation_id="conversation-1",
+            duration_ms=2000,
+        )
+
+        status_response = api.get_chat_video_job(created.id, self._chat_request())
+        download = api.download_chat_video(created.id)
+
+        self.assertEqual(status_response.status, "completed")
+        self.assertEqual(status_response.duration_ms, 2000)
+        self.assertEqual(
+            status_response.download_url,
+            f"http://test/videos/chat-video/{created.id}/download",
+        )
+        self.assertEqual(Path(download.path), output)
+        self.assertEqual(download.media_type, "video/mp4")
+
+    def test_pending_chat_video_download_returns_409(self):
+        created = api.create_chat_video(
+            api.ChatVideoCreate.model_validate(self._chat_schema()),
+            self._chat_request(),
+        )
+        with self.assertRaises(HTTPException) as raised:
+            api.download_chat_video(created.id)
+        self.assertEqual(raised.exception.status_code, 409)
+
+    def test_requests_early_stop_for_processing_chat_video(self):
+        created = api.create_chat_video(
+            api.ChatVideoCreate.model_validate(self._chat_schema()),
+            self._chat_request(),
+        )
+        api.chat_video_jobs.claim_next(self.chat_video_database_path)
+
+        response = api.stop_chat_video(created.id, self._chat_request())
+
+        self.assertEqual(response.status, "processing")
+        self.assertTrue(response.stop_requested)
+
+    def test_stop_rejects_queued_chat_video(self):
+        created = api.create_chat_video(
+            api.ChatVideoCreate.model_validate(self._chat_schema()),
+            self._chat_request(),
+        )
+        with self.assertRaises(HTTPException) as raised:
+            api.stop_chat_video(created.id, self._chat_request())
+        self.assertEqual(raised.exception.status_code, 409)
 
     def test_lists_final_videos(self):
         self.assertEqual(

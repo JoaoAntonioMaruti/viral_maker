@@ -13,6 +13,7 @@ file, the output video has no soundtrack.
 
 - Python 3.10 or newer
 - FFmpeg and FFprobe
+- PulseAudio/PipeWire with `pactl` (for browser audio capture)
 - ImageMagick (`magick`, used to compose carousel text and arrows)
 - yt-dlp (required to download audio from TikTok)
 - `Noto Sans CJK JP` font (included in the Noto CJK package on many systems)
@@ -103,6 +104,55 @@ python3 -m venv .venv
 ```
 
 Interactive documentation is available at `http://localhost:8000/docs`.
+
+### Director-driven chat video
+
+The `chat-video` mode accepts a version 1 `ConversationScript` directly and
+creates an asynchronous recording job. The web client must be running at
+`http://localhost:3000/play` and emit `gameplayDirectorChatStarted` and
+`gameplayDirectorChatFinished`. Gameplay wrapper objects are not accepted;
+send their nested `conversation` object instead.
+
+```bash
+curl -X POST http://localhost:8000/videos/chat-video \
+  -H 'Content-Type: application/json' \
+  --data @conversation.json
+```
+
+To show the Chromium window while recording for local debugging, add the
+`headed=true` query parameter. The setting is stored with the job and defaults
+to `false`:
+
+```bash
+curl -X POST 'http://localhost:8000/videos/chat-video?headed=true' \
+  -H 'Content-Type: application/json' \
+  --data @conversation.json
+```
+
+The HTTP 202 response includes `id` and `status_url`. Poll the job until it is
+`completed`, then download it:
+
+```bash
+curl http://localhost:8000/videos/chat-video/chat-JOB_ID
+curl -OJ http://localhost:8000/videos/chat-video/chat-JOB_ID/download
+```
+
+Possible states are `queued`, `processing`, `completed`, and `failed`. Pending
+jobs survive API restarts; an interrupted recording restarts from the
+beginning. The result is a 1080x1920 H.264 MP4 with the Chromium tab's real
+audio encoded as AAC. Chromium renders at 540x960 and FFmpeg scales the final
+file to 1080x1920.
+
+To finish an active recording early and save everything captured so far, send:
+
+```bash
+curl -X POST http://localhost:8000/videos/chat-video/chat-JOB_ID/stop
+```
+
+The request returns HTTP 202 with `stop_requested: true`. Poll the regular
+status URL until it becomes `completed`; `stopped_early` will then be `true`
+and the normal `download_url` will be available. A queued job cannot be stopped
+because it has no recorded media yet.
 
 Create a video:
 

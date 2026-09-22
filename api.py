@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-from typing import Literal
+from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+import chat_video_jobs
 from audio_metrics import fetch_all_metrics, upsert_metrics
+from chat_video import ChatVideoWorker
 from download_tiktok_audio import AudioDownloadError, download_audio_with_metadata
 from generation_assets import (
     delete_video_records,
@@ -47,16 +52,39 @@ AUDIO_DIRECTORY = PROJECT_ROOT / "audio"
 DATABASE_PATH = PROJECT_ROOT / "audio_metrics.db"
 GENERATION_DATABASE_PATH = PROJECT_ROOT / "generation_assets.db"
 SCREENSHOT_SCRIPT = PROJECT_ROOT / "assets" / "inject.js"
+CHAT_VIDEO_SCRIPT = PROJECT_ROOT / "assets" / "chat_video_inject.js"
+CHAT_VIDEO_DATABASE_PATH = PROJECT_ROOT / "chat_video_jobs.db"
 DEFAULT_SCREENSHOT_CLIENT_URL = "http://127.0.0.1:3000/play"
 SUPPORTED_AUDIO_EXTENSIONS = {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}
 
 # Video encoding is CPU-heavy. A single worker processes one video at a time.
 render_lock = Lock()
+chat_video_worker: ChatVideoWorker | None = None
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    global chat_video_worker
+    worker = ChatVideoWorker(
+        CHAT_VIDEO_DATABASE_PATH,
+        OUTPUT_DIRECTORY,
+        CHAT_VIDEO_SCRIPT,
+        render_lock,
+    )
+    chat_video_worker = worker
+    worker.start()
+    try:
+        yield
+    finally:
+        worker.stop()
+        chat_video_worker = None
+
 
 app = FastAPI(
     title="Viral Maker API",
     description="Generate captioned vertical videos with FFmpeg.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
@@ -220,6 +248,53 @@ class ScreenshotMockHistory(BaseModel):
     screenshot_url: str
 
 
+class ChatVideoNpc(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    id: str = Field(min_length=1)
+    name: str = Field(min_length=1)
+    renderer: dict[str, Any]
+
+
+class ChatVideoCreate(BaseModel):
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    schema_version: Literal[1] = Field(alias="schemaVersion")
+    id: str = Field(min_length=1)
+    npc: ChatVideoNpc
+    options: dict[str, Any] = Field(default_factory=dict)
+    events: list[dict[str, Any]] = Field(min_length=1)
+
+    @field_validator("events")
+    @classmethod
+    def require_event_types(
+        cls, events: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if any(
+            not isinstance(event.get("type"), str) or not event["type"].strip()
+            for event in events
+        ):
+            raise ValueError("every event must have a non-empty type")
+        return events
+
+
+class ChatVideoJob(BaseModel):
+    id: str
+    status: Literal["queued", "processing", "completed", "failed"]
+    headed: bool
+    stop_requested: bool
+    stopped_early: bool
+    status_url: str
+    download_url: str | None
+    execution_id: str | None = None
+    conversation_id: str | None = None
+    duration_ms: int | None = None
+    error: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
 def video_path(video_id: str) -> Path:
     if not video_id or Path(video_id).name != video_id:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -235,6 +310,43 @@ def screenshot_path(screenshot_id: str) -> Path:
     candidate = (OUTPUT_DIRECTORY / f"{screenshot_id}.png").resolve()
     if candidate.parent != OUTPUT_DIRECTORY.resolve() or not candidate.is_file():
         raise HTTPException(status_code=404, detail="Screenshot not found")
+    return candidate
+
+
+def _chat_video_job_response(
+    job: dict[str, Any], request: Request
+) -> ChatVideoJob:
+    job_id = job["id"]
+    completed = job["status"] == "completed"
+    return ChatVideoJob(
+        id=job_id,
+        status=job["status"],
+        headed=bool(job["headed"]),
+        stop_requested=bool(job["stop_requested"]),
+        stopped_early=bool(job["stopped_early"]),
+        status_url=str(request.url_for("get_chat_video_job", job_id=job_id)),
+        download_url=(
+            str(request.url_for("download_chat_video", job_id=job_id))
+            if completed
+            else None
+        ),
+        execution_id=job["execution_id"],
+        conversation_id=job["conversation_id"],
+        duration_ms=job["duration_ms"],
+        error=job["error"],
+        created_at=job["created_at"],
+        started_at=job["started_at"],
+        finished_at=job["finished_at"],
+    )
+
+
+def _chat_video_output_path(job: dict[str, Any]) -> Path:
+    filename = job.get("output_filename")
+    if not filename or Path(filename).name != filename:
+        raise HTTPException(status_code=404, detail="Chat video not found")
+    candidate = (OUTPUT_DIRECTORY / filename).resolve()
+    if candidate.parent != OUTPUT_DIRECTORY.resolve() or not candidate.is_file():
+        raise HTTPException(status_code=404, detail="Chat video not found")
     return candidate
 
 
@@ -562,6 +674,106 @@ def create_video(payload: VideoCreate, request: Request) -> VideoResult:
             else None
         ),
     )
+
+
+@app.post(
+    "/videos/chat-video",
+    response_model=ChatVideoJob,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_chat_video(
+    payload: ChatVideoCreate,
+    request: Request,
+    headed: bool = False,
+) -> ChatVideoJob:
+    job_id = f"chat-{uuid4().hex}"
+    schema_json = json.dumps(
+        payload.model_dump(by_alias=True),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    try:
+        job = chat_video_jobs.create(
+            CHAT_VIDEO_DATABASE_PATH,
+            job_id,
+            schema_json,
+            headed=headed,
+        )
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=500, detail="Could not enqueue chat video"
+        ) from exc
+    return _chat_video_job_response(job, request)
+
+
+@app.get(
+    "/videos/chat-video/{job_id}",
+    response_model=ChatVideoJob,
+    name="get_chat_video_job",
+)
+def get_chat_video_job(job_id: str, request: Request) -> ChatVideoJob:
+    try:
+        job = chat_video_jobs.fetch(CHAT_VIDEO_DATABASE_PATH, job_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=500, detail="Could not read chat video job"
+        ) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Chat video job not found")
+    return _chat_video_job_response(job, request)
+
+
+@app.post(
+    "/videos/chat-video/{job_id}/stop",
+    response_model=ChatVideoJob,
+    status_code=status.HTTP_202_ACCEPTED,
+    name="stop_chat_video",
+)
+def stop_chat_video(job_id: str, request: Request) -> ChatVideoJob:
+    try:
+        job = chat_video_jobs.fetch(CHAT_VIDEO_DATABASE_PATH, job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Chat video job not found")
+        if job["status"] == "queued":
+            raise HTTPException(
+                status_code=409,
+                detail="Chat video recording has not started",
+            )
+        if job["status"] == "failed":
+            raise HTTPException(
+                status_code=409,
+                detail="Failed chat video cannot be stopped",
+            )
+        if job["status"] == "processing":
+            job = chat_video_jobs.request_stop(CHAT_VIDEO_DATABASE_PATH, job_id)
+            assert job is not None
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=500, detail="Could not stop chat video job"
+        ) from exc
+    return _chat_video_job_response(job, request)
+
+
+@app.get(
+    "/videos/chat-video/{job_id}/download",
+    name="download_chat_video",
+)
+def download_chat_video(job_id: str) -> FileResponse:
+    try:
+        job = chat_video_jobs.fetch(CHAT_VIDEO_DATABASE_PATH, job_id)
+    except sqlite3.Error as exc:
+        raise HTTPException(
+            status_code=500, detail="Could not read chat video job"
+        ) from exc
+    if job is None:
+        raise HTTPException(status_code=404, detail="Chat video job not found")
+    if job["status"] != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Chat video is {job['status']}",
+        )
+    path = _chat_video_output_path(job)
+    return FileResponse(path, media_type="video/mp4", filename=path.name)
 
 
 @app.get("/videos/{video_id}", response_model=VideoStatus)
